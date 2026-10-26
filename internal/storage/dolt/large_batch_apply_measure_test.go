@@ -168,8 +168,8 @@ const statementCountToleranceDolt = 2
 // pinnedEmbeddedStatementCounts in internal/storage/embeddeddolt for the
 // per-change breakdown. The two backends now agree to within the tolerance.
 var pinnedDoltStatementCounts = map[string]int64{
-	"356 (mol 1x)": 6285,
-	"712 (mol 2x)": 12567,
+	"356 (mol 1x)": 6284,
+	"712 (mol 2x)": 12566,
 	"40 (classic)": 765,
 }
 
