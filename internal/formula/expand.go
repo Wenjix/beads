@@ -60,11 +60,15 @@ func (b *ExpansionBudget) spend(n int) error {
 	return fmt.Errorf("%w: formula %q expands to more than %d steps", ErrExpansionLimit, b.formula, MaxExpandedSteps)
 }
 
-// countSteps counts steps including nested children.
+// countSteps counts the steps a clone of steps allocates: nested children and
+// the bodies of nested loops, which are cloned before they expand.
 func countSteps(steps []*Step) int {
 	n := len(steps)
 	for _, s := range steps {
 		n += countSteps(s.Children)
+		if s.Loop != nil {
+			n += countSteps(s.Loop.Body)
+		}
 	}
 	return n
 }

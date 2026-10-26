@@ -1006,6 +1006,29 @@ func TestApplyControlFlowWithBudget_NestedLoopsOverLimitFailFast(t *testing.T) {
 	}
 }
 
+func TestApplyLoops_NestedLoopBodyChargedBeforeCloning(t *testing.T) {
+	body := make([]*Step, 9000)
+	for i := range body {
+		body[i] = &Step{ID: fmt.Sprintf("work%d", i), Title: "Work"}
+	}
+	steps := []*Step{{
+		ID: "outer",
+		Loop: &LoopSpec{
+			Count: 1000,
+			Body:  []*Step{{ID: "inner", Loop: &LoopSpec{Count: 1, Body: body}}},
+		},
+	}}
+
+	budget := NewExpansionBudget("wide")
+	_, err := ApplyControlFlowWithBudget(steps, nil, budget)
+	if !errors.Is(err, ErrExpansionLimit) {
+		t.Fatalf("err = %v, want ErrExpansionLimit", err)
+	}
+	if budget.used > MaxExpandedSteps {
+		t.Errorf("budget spent %d, want the outer loop refused before cloning past %d", budget.used, MaxExpandedSteps)
+	}
+}
+
 func TestApplyLoops_HugeRangeOverLimit(t *testing.T) {
 	steps := []*Step{{
 		ID: "sweep",
