@@ -879,6 +879,10 @@ func guardHookWritePath(hookPath string, allowTracked bool) error {
 }
 
 func guardHookWritePathWithProbe(hookPath string, allowTracked bool, tracked func(string) string) error {
+	parentDir := filepath.Dir(hookPath)
+	if pfi, perr := os.Lstat(parentDir); perr == nil && pfi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to write hook %s through a symlinked directory", parentDir, hookPath)
+	}
 	fi, err := os.Lstat(hookPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1071,15 +1075,21 @@ func installHooksWithContext(hookNames []string, force, shared, chain, beadsHook
 
 //nolint:unparam // force and chain remain accepted compatibility no-ops
 func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, selected *initHooksContext) error {
-	var hooksDir string
+	var hooksDir, baseDir, repoRoot string
 	if selected != nil {
 		hooksDir = selected.paths.HooksDir
+		repoRoot = selected.paths.MainRepoRoot
+		if repoRoot == "" {
+			repoRoot = selected.paths.RepoRoot
+		}
 		if beadsHooks {
 			if selected.beadsDir == "" {
 				return fmt.Errorf("%s", activeWorkspaceNotFoundError())
 			}
+			baseDir = selected.beadsDir
 			hooksDir = filepath.Join(selected.beadsDir, "hooks")
 		} else if shared {
+			baseDir = selected.paths.MainRepoRoot
 			hooksDir = filepath.Join(selected.paths.MainRepoRoot, ".beads-hooks")
 		}
 	} else if beadsHooks {
@@ -1088,10 +1098,17 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 		if beadsDir == "" {
 			return fmt.Errorf("%s", activeWorkspaceNotFoundError())
 		}
+		baseDir = beadsDir
+		repoRoot, _ = git.GetMainRepoRoot()
+		if repoRoot == "" {
+			repoRoot = git.GetRepoRoot()
+		}
 		hooksDir = filepath.Join(beadsDir, "hooks")
 	} else if shared {
 		// Use versioned directory for shared hooks
 		if mainRoot, err := git.GetMainRepoRoot(); err == nil && mainRoot != "" {
+			baseDir = mainRoot
+			repoRoot = mainRoot
 			hooksDir = filepath.Join(mainRoot, ".beads-hooks")
 		} else {
 			hooksDir = ".beads-hooks"
@@ -1103,6 +1120,14 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 		if err != nil {
 			return err
 		}
+		repoRoot, _ = git.GetMainRepoRoot()
+		if repoRoot == "" {
+			repoRoot = git.GetRepoRoot()
+		}
+	}
+
+	if err := validateHooksDir(hooksDir, baseDir, repoRoot); err != nil {
+		return fmt.Errorf("refusing to install hooks: %w", err)
 	}
 
 	// Create hooks directory if it doesn't exist.
@@ -1116,18 +1141,6 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 		return fmt.Errorf("failed to create hooks directory: %w", err)
 	}
 
-	// When setting a local core.hooksPath (beads or shared mode), preserve any
-	// hooks from the previously effective hooks directory (e.g. a global
-	// core.hooksPath or the default .git/hooks). Without this, setting a local
-	// core.hooksPath silently shadows the global one and those hooks stop running.
-	if beadsHooks || shared {
-		if selected == nil {
-			preservePreexistingHooks(hooksDir)
-		} else {
-			preservePreexistingHooksAt(hooksDir, selected.paths.HooksDir, func() string { return selected.paths.MainRepoRoot })
-		}
-	}
-
 	tracked := gitTrackedFileContext
 	if selected != nil {
 		tracked = func(path string) string {
@@ -1139,6 +1152,18 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 	for _, hookName := range hookNames {
 		if err := guardHookWritePathWithProbe(filepath.Join(hooksDir, hookName), shared, tracked); err != nil {
 			return fmt.Errorf("refusing to install %s hook: %w", hookName, err)
+		}
+	}
+
+	// When setting a local core.hooksPath (beads or shared mode), preserve any
+	// hooks from the previously effective hooks directory (e.g. a global
+	// core.hooksPath or the default .git/hooks). Without this, setting a local
+	// core.hooksPath silently shadows the global one and those hooks stop running.
+	if beadsHooks || shared {
+		if selected == nil {
+			preservePreexistingHooks(hooksDir)
+		} else {
+			preservePreexistingHooksAt(hooksDir, selected.paths.HooksDir, func() string { return selected.paths.MainRepoRoot })
 		}
 	}
 
@@ -1180,7 +1205,7 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 					backupPath := hookPath + ".backup"
 					if _, statErr := os.Lstat(backupPath); os.IsNotExist(statErr) {
 						// #nosec G306 -- keep executable so a rename restores a working hook
-						if backupErr := os.WriteFile(backupPath, existing, 0755); backupErr != nil {
+						if backupErr := atomicfile.WriteFileNoFollow(backupPath, existing, 0755); backupErr != nil {
 							return fmt.Errorf("failed to back up %s before injecting bd section: %w", hookName, backupErr)
 						}
 					}
@@ -1195,7 +1220,7 @@ func installHooksAt(hookNames []string, force, shared, chain, beadsHooks bool, s
 
 		// Write hook file
 		// #nosec G306 -- git hooks must be executable for Git to run them
-		if err := os.WriteFile(hookPath, []byte(newContent), 0755); err != nil {
+		if err := atomicfile.WriteFileNoFollow(hookPath, []byte(newContent), 0755); err != nil {
 			return fmt.Errorf("failed to write %s: %w", hookName, err)
 		}
 	}
@@ -1577,10 +1602,24 @@ func uninstallHooks() error {
 }
 
 func uninstallHooksAt(hooksDir string, reset func() error) error {
+	if info, err := os.Lstat(hooksDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to uninstall hooks in symlinked directory %s", hooksDir)
+	}
 	hookNames := []string{"pre-commit", "post-merge", "pre-push", "post-checkout", "prepare-commit-msg"}
 
 	for _, hookName := range hookNames {
 		hookPath := filepath.Join(hooksDir, hookName)
+
+		fi, lerr := os.Lstat(hookPath)
+		if lerr != nil {
+			if os.IsNotExist(lerr) {
+				continue
+			}
+			return fmt.Errorf("failed to stat %s: %w", hookName, lerr)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 
 		// #nosec G304 -- hook path constrained to .git/hooks directory
 		content, err := os.ReadFile(hookPath)
@@ -1602,7 +1641,7 @@ func uninstallHooksAt(hooksDir string, reset func() error) error {
 				}
 			} else {
 				// #nosec G306 -- git hooks must be executable
-				if err := os.WriteFile(hookPath, []byte(newContent), 0755); err != nil {
+				if err := atomicfile.WriteFileNoFollow(hookPath, []byte(newContent), 0755); err != nil {
 					return fmt.Errorf("failed to write %s: %w", hookName, err)
 				}
 			}
@@ -1617,7 +1656,7 @@ func uninstallHooksAt(hooksDir string, reset func() error) error {
 			}
 			// Restore backup if exists
 			backupPath := hookPath + ".backup"
-			if _, err := os.Stat(backupPath); err == nil {
+			if bfi, err := os.Lstat(backupPath); err == nil && bfi.Mode()&os.ModeSymlink == 0 {
 				if err := os.Rename(backupPath, hookPath); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to restore backup for %s: %v\n", hookName, err)
 				}
@@ -1920,39 +1959,129 @@ func exportJSONLForCommit() {
 	}
 }
 
+func validateHooksDir(hooksDir, baseDir, repoRoot string) error {
+	if info, err := os.Lstat(hooksDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing to write hooks through a symlinked directory", hooksDir)
+	}
+	absHooks, err := filepath.Abs(hooksDir)
+	if err != nil {
+		return err
+	}
+	resolvedHooks, err := resolveHookExportParent(absHooks)
+	if err != nil {
+		return err
+	}
+	within := func(path, root string) bool {
+		rel, err := filepath.Rel(root, path)
+		return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)))
+	}
+	if baseDir != "" {
+		if info, err := os.Lstat(baseDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; refusing to write hooks through a symlinked directory", baseDir)
+		}
+		absBase, err := filepath.Abs(baseDir)
+		if err != nil {
+			return err
+		}
+		resolvedBase, err := resolveHookExportParent(absBase)
+		if err != nil {
+			return err
+		}
+		if !within(resolvedHooks, resolvedBase) {
+			return fmt.Errorf("%s resolves outside %s; refusing to write hooks through a symlinked directory", hooksDir, baseDir)
+		}
+	}
+	if repoRoot != "" {
+		absRepo, err := filepath.Abs(repoRoot)
+		if err == nil {
+			if resolvedRepo, rerr := filepath.EvalSymlinks(absRepo); rerr == nil {
+				if (within(absHooks, absRepo) || within(absHooks, resolvedRepo)) && !within(resolvedHooks, resolvedRepo) {
+					return fmt.Errorf("%s resolves outside repository %s; refusing to write hooks through a symlinked directory", hooksDir, repoRoot)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func confinedHookExportPath(dir, path, repoRoot string) (string, error) {
+	return confinedExportPath(dir, path, repoRoot, true)
+}
+
+func confinedAutoExportPath(dir, path, repoRoot string) (string, error) {
+	return confinedExportPath(dir, path, repoRoot, false)
+}
+
+func confinedExportPath(dir, path, repoRoot string, requireRepoRoot bool) (string, error) {
 	path = filepath.Clean(path)
 	if filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("must be a relative path within the export directory: %q", path)
 	}
-	if repoRoot == "" {
+	if requireRepoRoot && repoRoot == "" {
 		return "", fmt.Errorf("cannot determine repository root")
-	}
-	root, err := filepath.Abs(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	fullPath, err := filepath.Abs(filepath.Join(dir, path))
-	if err != nil {
-		return "", err
 	}
 	within := func(path, root string) bool {
 		rel, err := filepath.Rel(root, path)
 		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
 	}
-	resolvedRoot, err := filepath.EvalSymlinks(root)
+	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", err
 	}
-	if !within(fullPath, root) && !within(fullPath, resolvedRoot) {
-		return "", fmt.Errorf("path is outside the repository: %q", path)
+	if info, lerr := os.Lstat(absDir); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("export directory is a symlink: %q", dir)
 	}
+	resolvedDir, err := resolveHookExportParent(absDir)
+	if err != nil {
+		return "", err
+	}
+	fullPath, err := filepath.Abs(filepath.Join(absDir, path))
+	if err != nil {
+		return "", err
+	}
+	if !within(fullPath, absDir) && !within(fullPath, resolvedDir) {
+		return "", fmt.Errorf("path is outside the export directory: %q", path)
+	}
+
+	var root, resolvedRoot string
+	inRepo := false
+	if repoRoot != "" {
+		root, err = filepath.Abs(repoRoot)
+		if err != nil {
+			return "", err
+		}
+		resolvedRoot, err = filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", err
+		}
+		if within(absDir, root) || within(absDir, resolvedRoot) {
+			inRepo = true
+			if !within(resolvedDir, resolvedRoot) {
+				return "", fmt.Errorf("export directory resolves outside the repository: %q", dir)
+			}
+			if !within(fullPath, root) && !within(fullPath, resolvedRoot) {
+				return "", fmt.Errorf("path is outside the repository: %q", path)
+			}
+		}
+	}
+
 	parent, err := resolveHookExportParent(filepath.Dir(fullPath))
 	if err != nil {
 		return "", err
 	}
-	if !within(parent, resolvedRoot) {
+	if !within(parent, resolvedDir) {
 		return "", fmt.Errorf("parent resolves outside the repository: %q", path)
+	}
+	if inRepo && !within(parent, resolvedRoot) {
+		return "", fmt.Errorf("parent resolves outside the repository: %q", path)
+	}
+	if info, lerr := os.Lstat(fullPath); lerr == nil && info.Mode()&os.ModeSymlink != 0 {
+		if resolved, rerr := filepath.EvalSymlinks(fullPath); rerr == nil {
+			if !within(resolved, resolvedDir) || (inRepo && !within(resolved, resolvedRoot)) {
+				return "", fmt.Errorf("path resolves outside the repository: %q", path)
+			}
+		}
+		return "", fmt.Errorf("path is a symlink: %q", path)
 	}
 	resolvedPath := filepath.Join(parent, filepath.Base(fullPath))
 	if resolved, err := filepath.EvalSymlinks(fullPath); err == nil {
@@ -1960,10 +2089,22 @@ func confinedHookExportPath(dir, path, repoRoot string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	if !within(resolvedPath, resolvedRoot) {
+	if !within(resolvedPath, resolvedDir) {
 		return "", fmt.Errorf("path resolves outside the repository: %q", path)
 	}
-	for _, candidate := range []struct{ path, root string }{{fullPath, root}, {fullPath, resolvedRoot}, {resolvedPath, resolvedRoot}} {
+	if inRepo && !within(resolvedPath, resolvedRoot) {
+		return "", fmt.Errorf("path resolves outside the repository: %q", path)
+	}
+
+	candidates := []struct{ path, root string }{{fullPath, absDir}, {resolvedPath, resolvedDir}}
+	if inRepo {
+		candidates = append(candidates,
+			struct{ path, root string }{fullPath, root},
+			struct{ path, root string }{fullPath, resolvedRoot},
+			struct{ path, root string }{resolvedPath, resolvedRoot},
+		)
+	}
+	for _, candidate := range candidates {
 		rel, err := filepath.Rel(candidate.root, candidate.path)
 		if err != nil {
 			return "", err
@@ -1974,21 +2115,26 @@ func confinedHookExportPath(dir, path, repoRoot string) (string, error) {
 			}
 		}
 	}
-	for _, getDir := range []func() (string, error){git.GetGitDir, git.GetGitCommonDir} {
-		gitDir, err := getDir()
-		if err != nil {
-			return "", fmt.Errorf("cannot determine git metadata directory: %w", err)
-		}
-		gitDir, err = filepath.Abs(gitDir)
-		if err != nil {
-			return "", err
-		}
-		gitDir, err = filepath.EvalSymlinks(gitDir)
-		if err != nil {
-			return "", err
-		}
-		if within(resolvedPath, gitDir) {
-			return "", fmt.Errorf("path resolves into git metadata: %q", path)
+	if repoRoot != "" {
+		for _, getDir := range []func() (string, error){git.GetGitDir, git.GetGitCommonDir} {
+			gitDir, err := getDir()
+			if err != nil {
+				if requireRepoRoot {
+					return "", fmt.Errorf("cannot determine git metadata directory: %w", err)
+				}
+				continue
+			}
+			gitDir, err = filepath.Abs(gitDir)
+			if err != nil {
+				return "", err
+			}
+			gitDir, err = filepath.EvalSymlinks(gitDir)
+			if err != nil {
+				return "", err
+			}
+			if within(resolvedPath, gitDir) {
+				return "", fmt.Errorf("path resolves into git metadata: %q", path)
+			}
 		}
 	}
 	return fullPath, nil

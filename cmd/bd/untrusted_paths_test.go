@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +248,137 @@ func TestHookExportPathResolvesRoot(t *testing.T) {
 	writeFileForWorktreeTest(t, filepath.Join(root, "file"), []byte("test"))
 	if _, err := confinedHookExportPath(root, "file/issues.jsonl", root); err == nil {
 		t.Error("accepted non-directory parent")
+	}
+	// Final-component symlink pointing outside repository must be rejected.
+	outsideFile := filepath.Join(t.TempDir(), "outside.jsonl")
+	writeFileForWorktreeTest(t, outsideFile, []byte("keep"))
+	beadsDir := filepath.Join(root, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideFile, filepath.Join(beadsDir, "issues.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := confinedHookExportPath(beadsDir, "issues.jsonl", root); err == nil {
+		t.Error("accepted final-component symlink pointing outside repository")
+	}
+	// Legitimate out-of-repo beadsDir (e.g. BEADS_DIR override, .beads/redirect, or parent .beads) must succeed when confined within beadsDir.
+	externalBeads := filepath.Join(t.TempDir(), "shared-beads")
+	if err := os.MkdirAll(externalBeads, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := confinedHookExportPath(externalBeads, "issues.jsonl", root); err != nil {
+		t.Errorf("rejected valid out-of-repo beadsDir export path: %v", err)
+	}
+	if _, err := confinedHookExportPath(externalBeads, "../escape.jsonl", root); err == nil {
+		t.Error("accepted traversal out of out-of-repo beadsDir")
+	}
+}
+
+func TestHooksRefuseSymlinkedHooksDirAndUninstallSymlinkedHook(t *testing.T) {
+	isolateBeadsDirForTest(t)
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	beadsDir := filepath.Join(repo, ".beads")
+	writeFileForWorktreeTest(t, filepath.Join(beadsDir, "metadata.json"), []byte("{}\n"))
+	runGitForWorktreeTest(t, repo, "init", "-q")
+	t.Chdir(repo)
+	git.ResetCaches()
+	t.Cleanup(git.ResetCaches)
+	t.Setenv("BEADS_DIR", beadsDir)
+
+	outsideHooks := filepath.Join(root, "outside-hooks")
+	if err := os.MkdirAll(outsideHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(outsideHooks, "pre-commit")
+	writeFileForWorktreeTest(t, sentinel, []byte("#!/bin/sh\necho keep\n"))
+
+	hooksLink := filepath.Join(beadsDir, "hooks")
+	if err := os.Symlink(outsideHooks, hooksLink); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installHooksWithOptions([]string{"pre-commit"}, false, false, false, true); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected installHooksWithOptions to refuse symlinked .beads/hooks, got %v", err)
+	}
+	if got := readFileForWorktreeTest(t, sentinel); got != "#!/bin/sh\necho keep\n" {
+		t.Fatalf("outside hook modified by install: %q", got)
+	}
+
+	if err := uninstallHooksAt(hooksLink, func() error { return nil }); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected uninstallHooksAt to refuse symlinked hooksDir, got %v", err)
+	}
+
+	// Real hooksDir with a symlinked hook file pointing to a file with bd section markers must not modify or remove the target on uninstall.
+	realHooks := filepath.Join(repo, "real-hooks")
+	if err := os.MkdirAll(realHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	markedTarget := filepath.Join(outsideHooks, "marked-pre-commit")
+	markedContent := "#!/usr/bin/env sh\necho keep\n" + generateHookSection("pre-commit")
+	writeFileForWorktreeTest(t, markedTarget, []byte(markedContent))
+	if err := os.Symlink(markedTarget, filepath.Join(realHooks, "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	if err := uninstallHooksAt(realHooks, func() error { return nil }); err != nil {
+		t.Fatalf("uninstallHooksAt failed: %v", err)
+	}
+	if got := readFileForWorktreeTest(t, markedTarget); got != markedContent {
+		t.Fatalf("symlinked hook target modified on uninstall: %q", got)
+	}
+}
+
+func TestMaybeAutoExportRejectsUnsafePaths(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path string
+		link bool
+	}{
+		{name: "traversal", path: "../../victim.jsonl"},
+		{name: "absolute", path: "/ABSOLUTE"},
+		{name: "symlink", path: "issues.jsonl", link: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateBeadsDirForTest(t)
+			initConfigForTest(t)
+			saveAndRestoreGlobals(t)
+			fake := &fakeStateHashStore{stateHash: "hash-after-write"}
+			store = fake
+
+			dir := autoExportTestDir(t)
+			beadsDir := filepath.Join(dir, ".beads")
+			victim := filepath.Join(t.TempDir(), "victim.jsonl")
+			writeFileForWorktreeTest(t, victim, []byte("keep"))
+
+			exportPath := tc.path
+			if tc.path == "/ABSOLUTE" {
+				exportPath = victim
+			}
+			if tc.link {
+				if err := os.Symlink(victim, filepath.Join(beadsDir, "issues.jsonl")); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			config.Set("export.auto", true)
+			config.Set("export.path", exportPath)
+
+			warning := captureHookStderr(t, func() {
+				if err := maybeAutoExport(context.Background(), false); err != nil {
+					t.Fatalf("maybeAutoExport: %v", err)
+				}
+			})
+			if !strings.Contains(warning, "export.path") {
+				t.Fatalf("expected export.path warning, got %q", warning)
+			}
+			if fake.stateHashCalls != 0 {
+				t.Fatalf("expected unsafe export.path to be rejected before store state hash lookup, got %d calls", fake.stateHashCalls)
+			}
+			if got := readFileForWorktreeTest(t, victim); got != "keep" {
+				t.Fatalf("victim modified: %q", got)
+			}
+		})
 	}
 }
 

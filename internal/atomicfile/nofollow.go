@@ -20,7 +20,8 @@ func rejectSymlink(path string) error {
 }
 
 // OpenNoFollow opens path without following a symlink at its final component.
-// Parent directories must be trusted. Non-Unix platforms use only Lstat.
+// Parent directories must be trusted. Non-Unix platforms use only Lstat
+// (os.ModeSymlink), which does not report Windows directory junctions.
 func OpenNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
 	if err := rejectSymlink(path); err != nil {
 		return nil, err

@@ -20,6 +20,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/execenv"
+	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
@@ -124,7 +125,11 @@ func maybeAutoExport(ctx context.Context, allowEmptyOverwrite bool) error {
 			exportPath = "issues.jsonl"
 		}
 	}
-	fullPath := filepath.Join(beadsDir, exportPath)
+	fullPath, err := confinedAutoExportPath(beadsDir, exportPath, git.GetRepoRoot())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: auto-export skipped: export.path: %v\n", err)
+		return nil
+	}
 
 	// Load state + interval.
 	state := loadExportAutoState(beadsDir)
@@ -253,7 +258,9 @@ func maybeAutoExport(ctx context.Context, allowEmptyOverwrite bool) error {
 	// has changed. Remove the empty file too so users don't see a stale 0-byte
 	// issues.jsonl before any issues exist.
 	if issueCount == 0 && memoryCount == 0 {
-		_ = os.Remove(fullPath)
+		if info, err := os.Lstat(fullPath); err == nil && info.Mode()&os.ModeSymlink == 0 {
+			_ = os.Remove(fullPath)
+		}
 		saveExportAutoState(beadsDir, &exportAutoState{
 			LastDoltCommit: currentCommit,
 			LastDiffAnchor: anchorCommit,
@@ -718,7 +725,7 @@ func buildAutoExportFilter(ctx context.Context) (types.IssueFilter, map[string]b
 // Writes to a temp file first, then renames into place so readers never see
 // a partial or truncated export. Used by both `bd export -o` and auto-export.
 func exportToFile(ctx context.Context, path string, includeMemories bool) (issueCount, memoryCount int, err error) {
-	w, err := atomicfile.Create(path, 0o644)
+	w, err := atomicfile.WriterNoFollow(path, 0o644)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create export file: %w", err)
 	}
@@ -991,7 +998,7 @@ func saveExportAutoState(beadsDir string, state *exportAutoState) {
 	// file. An empty state looks like "no prior commit" to the rest of
 	// the pipeline, which forces a full export on a repo where the
 	// incremental path would otherwise fire.
-	if err := atomicfile.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.WriteFileNoFollow(path, data, 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-export: failed to save state: %v\n", err)
 	}
 }
@@ -1377,7 +1384,7 @@ func rewriteExportFile(path string, upserts map[string][]byte, removed map[strin
 		lines.remove(id)
 	}
 
-	w, err := atomicfile.Create(path, 0o644)
+	w, err := atomicfile.WriterNoFollow(path, 0o644)
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to create export file: %w", err)
 	}
