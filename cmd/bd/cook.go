@@ -61,9 +61,9 @@ Formulas are high-level workflow templates that support:
   - Composition rules for bonding formulas together
   - Inheritance via extends
 
-One cook expands loops, ranges, expand and map rules into at most 10000
-steps in total. A formula that expands past that fails with "formula
-expansion limit exceeded".
+One cook may generate at most 10000 steps across loops, ranges, advice,
+aspects, expand and map rules. A formula that expands past that fails
+with "formula expansion limit exceeded".
 
 The --persist flag enables the legacy behavior of writing the proto
 to the database. This is useful when you want to reuse the same
@@ -178,7 +178,7 @@ func loadAndResolveFormula(formulaPath string, searchPaths []string) (*formula.F
 		return nil, fmt.Errorf("resolving formula: %w", err)
 	}
 
-	// One budget bounds every loop, range, expand and map step this cook generates.
+	// One budget bounds every loop, range, advice, aspect, expand and map step this cook generates.
 	budget := formula.NewExpansionBudget(resolved.Formula)
 
 	// Apply control flow operators - loops, branches, gates
@@ -190,7 +190,11 @@ func loadAndResolveFormula(formulaPath string, searchPaths []string) (*formula.F
 
 	// Apply advice transformations
 	if len(resolved.Advice) > 0 {
-		resolved.Steps = formula.ApplyAdvice(resolved.Steps, resolved.Advice)
+		advisedSteps, err := formula.ApplyAdviceWithBudget(resolved.Steps, resolved.Advice, budget)
+		if err != nil {
+			return nil, fmt.Errorf("applying advice: %w", err)
+		}
+		resolved.Steps = advisedSteps
 	}
 
 	// Apply inline step expansions
@@ -220,7 +224,11 @@ func loadAndResolveFormula(formulaPath string, searchPaths []string) (*formula.F
 				return nil, fmt.Errorf("%q is not an aspect formula (type=%s)", aspectName, aspectFormula.Type)
 			}
 			if len(aspectFormula.Advice) > 0 {
-				resolved.Steps = formula.ApplyAdvice(resolved.Steps, aspectFormula.Advice)
+				advisedSteps, err := formula.ApplyAdviceWithBudget(resolved.Steps, aspectFormula.Advice, budget)
+				if err != nil {
+					return nil, fmt.Errorf("applying aspect %q: %w", aspectName, err)
+				}
+				resolved.Steps = advisedSteps
 			}
 		}
 	}
@@ -752,7 +760,7 @@ func resolveAndCookFormulaWithVars(formulaName string, searchPaths []string, con
 		}
 	}
 
-	// One budget bounds every loop, range, expand and map step this cook generates.
+	// One budget bounds every loop, range, advice, aspect, expand and map step this cook generates.
 	budget := formula.NewExpansionBudget(resolved.Formula)
 
 	// Apply control flow operators - loops, branches, gates
@@ -764,7 +772,11 @@ func resolveAndCookFormulaWithVars(formulaName string, searchPaths []string, con
 
 	// Apply advice transformations
 	if len(resolved.Advice) > 0 {
-		resolved.Steps = formula.ApplyAdvice(resolved.Steps, resolved.Advice)
+		advisedSteps, err := formula.ApplyAdviceWithBudget(resolved.Steps, resolved.Advice, budget)
+		if err != nil {
+			return nil, fmt.Errorf("applying advice to %q: %w", formulaName, err)
+		}
+		resolved.Steps = advisedSteps
 	}
 
 	// Apply inline step expansions
@@ -794,7 +806,11 @@ func resolveAndCookFormulaWithVars(formulaName string, searchPaths []string, con
 				return nil, fmt.Errorf("%q is not an aspect formula (type=%s)", aspectName, aspectFormula.Type)
 			}
 			if len(aspectFormula.Advice) > 0 {
-				resolved.Steps = formula.ApplyAdvice(resolved.Steps, aspectFormula.Advice)
+				advisedSteps, err := formula.ApplyAdviceWithBudget(resolved.Steps, aspectFormula.Advice, budget)
+				if err != nil {
+					return nil, fmt.Errorf("applying aspect %q to %q: %w", aspectName, formulaName, err)
+				}
+				resolved.Steps = advisedSteps
 			}
 		}
 	}

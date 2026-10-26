@@ -1024,8 +1024,16 @@ func TestApplyLoops_NestedLoopBodyChargedBeforeCloning(t *testing.T) {
 	if !errors.Is(err, ErrExpansionLimit) {
 		t.Fatalf("err = %v, want ErrExpansionLimit", err)
 	}
-	if budget.used > MaxExpandedSteps {
-		t.Errorf("budget spent %d, want the outer loop refused before cloning past %d", budget.used, MaxExpandedSteps)
+	// If countSteps charges Loop.Body up front, the outer loop charges
+	// 1 + 9000 = 9001 on iteration 1 and refuses iteration 2 before cloning
+	// another 9000 steps. Without Loop.Body in countSteps, the outer loop
+	// clones all 1000 iterations (spending 1000) and fails later inside
+	// loop "outer.iter2.inner" with budget.used == 9998.
+	if !strings.Contains(err.Error(), `loop "outer":`) {
+		t.Errorf("err = %q, want outer loop refused before inner loop runs", err)
+	}
+	if budget.used != 9001 {
+		t.Errorf("budget spent %d, want 9001 (one outer iteration charged before refusing the second)", budget.used)
 	}
 }
 

@@ -280,7 +280,7 @@ func (r *applyBatchRun) finishSnapshots(ctx context.Context, tx *sql.Tx) error {
 			var err error
 			snapshot, err = HydrateIssueOperationResult(ctx, tx, item.IssueID, created)
 			if err != nil {
-				return err
+				return &publicops.ItemError{Index: index, Kind: item.Kind, IssueID: item.IssueID, Err: err}
 			}
 			r.snapshots[item.IssueID] = snapshot
 		}
@@ -367,7 +367,7 @@ func (r *applyBatchRun) applyCreate(ctx context.Context, tx *sql.Tx, index int, 
 	}
 	version, snapshot, err := r.rowState(ctx, tx, created.Issue.ID, hydrated)
 	if err != nil {
-		return err
+		return &publicops.ItemError{Index: index, Kind: publicops.ItemCreate, Key: item.Key, IssueID: created.Issue.ID, Err: err}
 	}
 	r.result.Items[index] = publicops.ItemResult{
 		Kind:       publicops.ItemCreate,
@@ -405,7 +405,7 @@ func (r *applyBatchRun) applyUpdate(ctx context.Context, tx *sql.Tx, index int, 
 	r.write.Changed = r.write.Changed || updated.Changed || len(tables) > 0
 	version, snapshot, err := r.rowState(ctx, tx, id, updated.Issue)
 	if err != nil {
-		return err
+		return &publicops.ItemError{Index: index, Kind: publicops.ItemUpdate, Key: item.Target.Key, IssueID: id, Err: err}
 	}
 	r.result.Items[index] = publicops.ItemResult{
 		Kind:       publicops.ItemUpdate,
@@ -440,7 +440,7 @@ func (r *applyBatchRun) applyClose(ctx context.Context, tx *sql.Tx, index int, i
 	r.write.Changed = r.write.Changed || closed.Changed || len(tables) > 0
 	version, snapshot, err := r.rowState(ctx, tx, id, closed.Issue)
 	if err != nil {
-		return err
+		return &publicops.ItemError{Index: index, Kind: publicops.ItemClose, Key: item.Target.Key, IssueID: id, Err: err}
 	}
 	r.result.Items[index] = publicops.ItemResult{
 		Kind:       publicops.ItemClose,

@@ -28,7 +28,7 @@ import (
 const DefaultMaxExpansionDepth = 5
 
 // MaxExpandedSteps is the most steps one cook may generate across all loop,
-// range, expand and map expansion together.
+// range, advice, aspect, expand and map transformations together.
 const MaxExpandedSteps = 10000
 
 // ErrExpansionLimit is returned when a cook would generate more than
