@@ -1834,7 +1834,15 @@ func exportJSONLForCommit() {
 	if exportPath == "" {
 		exportPath = "issues.jsonl"
 	}
-	fullPath := filepath.Join(hookJSONLDir(beadsDir), exportPath)
+	repoRoot := hookWorkTreeRoot()
+	if repoRoot == "" {
+		repoRoot = git.GetRepoRoot()
+	}
+	fullPath, err := confinedHookExportPath(hookJSONLDir(beadsDir), exportPath, repoRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "beads: pre-commit export warning: export.path: %v\n", err)
+		return
+	}
 
 	// If the export file is staged for deletion (user ran `git rm`), do not
 	// re-export or re-stage it. GIT_INDEX_FILE is set during an actual commit,
@@ -1910,6 +1918,61 @@ func exportJSONLForCommit() {
 			debug.Logf("pre-commit: git add failed: %v\n", err)
 		}
 	}
+}
+
+func confinedHookExportPath(dir, path, repoRoot string) (string, error) {
+	path = filepath.Clean(path)
+	if filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("must be a relative path within the export directory: %q", path)
+	}
+	if repoRoot == "" {
+		return "", fmt.Errorf("cannot determine repository root")
+	}
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	fullPath, err := filepath.Abs(filepath.Join(dir, path))
+	if err != nil {
+		return "", err
+	}
+	within := func(path, root string) bool {
+		rel, err := filepath.Rel(root, path)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if !within(fullPath, root) && !within(fullPath, resolvedRoot) {
+		return "", fmt.Errorf("path is outside the repository: %q", path)
+	}
+	parent, err := resolveHookExportParent(filepath.Dir(fullPath))
+	if err != nil {
+		return "", err
+	}
+	if !within(parent, resolvedRoot) {
+		return "", fmt.Errorf("parent resolves outside the repository: %q", path)
+	}
+	return fullPath, nil
+}
+
+func resolveHookExportParent(dir string) (string, error) {
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		parent, err := resolveHookExportParent(filepath.Dir(dir))
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(parent, filepath.Base(dir)), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return "", fmt.Errorf("export parent is not a directory: %s", dir)
+	}
+	return filepath.EvalSymlinks(dir)
 }
 
 // hookJSONLDir returns the directory the running git hook should read and
