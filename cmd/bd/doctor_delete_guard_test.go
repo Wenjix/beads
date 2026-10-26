@@ -48,13 +48,13 @@ var doctorDeleteExemptions = map[string]doctorDeleteExemption{
 		calls:  []string{"os.RemoveAll", "os.Remove"},
 		reason: "the deletion primitive itself",
 	},
-	"doctor/installation.go:CheckPermissions": {
+	"doctor/installation.go:probeDirectoryWrite": {
 		calls:  []string{"os.Remove"},
-		reason: "removes the .doctor-test-write probe the same call just wrote",
+		reason: "removes only the unique probe file this call created with os.CreateTemp",
 	},
-	"doctor/installation.go:CheckPermissionsWithStore": {
+	"doctor/perf.go:startCPUProfile": {
 		calls:  []string{"os.Remove"},
-		reason: "removes the .doctor-test-write probe the same call just wrote",
+		reason: "removes only the unique profile file this call created with os.CreateTemp when profiling cannot start",
 	},
 	"doctor/fix/locks.go:StaleLockFiles": {
 		calls:  []string{"os.Remove", "os.Remove", "os.Remove"},

@@ -3,10 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/atomicfile"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -97,14 +97,7 @@ func detectTestPollution(issues []*types.Issue) []pollutionResult {
 }
 
 func backupPollutedIssues(polluted []pollutionResult, path string) error {
-	// Create backup file
-	// nolint:gosec // G304: path is provided by user as explicit backup location
-	file, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("failed to create backup file: %w", err)
-	}
-	defer file.Close()
-
+	var backup strings.Builder
 	// Write each issue as JSONL
 	for _, p := range polluted {
 		data, err := json.Marshal(p.issue)
@@ -112,10 +105,12 @@ func backupPollutedIssues(polluted []pollutionResult, path string) error {
 			return fmt.Errorf("failed to marshal issue %s: %w", p.issue.ID, err)
 		}
 
-		if _, err := file.WriteString(string(data) + "\n"); err != nil {
-			return fmt.Errorf("failed to write issue %s: %w", p.issue.ID, err)
-		}
+		backup.Write(data)
+		backup.WriteByte('\n')
 	}
 
+	if err := atomicfile.WriteFileNoFollow(path, []byte(backup.String()), 0600); err != nil {
+		return fmt.Errorf("failed to write backup file: %w", err)
+	}
 	return nil
 }

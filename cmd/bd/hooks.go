@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/cmd/bd/doctor"
+	"github.com/steveyegge/beads/internal/atomicfile"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
@@ -1310,12 +1311,12 @@ func preservePreexistingHooksAt(targetDir, currentDir string, mainRoot func() st
 
 		// Don't overwrite existing files in target
 		dstPath := filepath.Join(targetDir, entry.Name())
-		if _, err := os.Stat(dstPath); err == nil {
+		if _, err := os.Lstat(dstPath); !os.IsNotExist(err) {
 			continue
 		}
 
 		// #nosec G306 -- git hooks must be executable
-		if err := os.WriteFile(dstPath, []byte(contentStr), 0755); err != nil {
+		if err := atomicfile.WriteFileNoFollow(dstPath, []byte(contentStr), 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to preserve %s hook from %s: %v\n", entry.Name(), currentDir, err)
 			continue
 		}
@@ -1390,7 +1391,7 @@ func fixHuskyHookLayout(sourceDir, targetDir string) {
 			continue
 		}
 		hookPath := filepath.Join(targetDir, entry.Name())
-		if _, statErr := os.Stat(hookPath); statErr != nil {
+		if info, statErr := os.Lstat(hookPath); statErr != nil || info.Mode()&os.ModeSymlink != 0 {
 			continue // target hook not copied — nothing to replace
 		}
 		userHookPath := filepath.Join(userHooksDir, entry.Name())
@@ -1404,7 +1405,7 @@ func fixHuskyHookLayout(sourceDir, targetDir string) {
 			replacement = "#!/usr/bin/env sh\n" + replacement
 		}
 		// #nosec G306 -- git hooks must be executable
-		if writeErr := os.WriteFile(hookPath, []byte(replacement), 0755); writeErr != nil {
+		if writeErr := atomicfile.WriteFileNoFollow(hookPath, []byte(replacement), 0755); writeErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to replace husky v9 shim %s: %v\n", entry.Name(), writeErr)
 		}
 	}
