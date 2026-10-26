@@ -207,6 +207,10 @@ bd mol pour <proto-id> --dry-run
 2. Define structure (see examples above)
 3. Use with: `bd cook my-workflow` then `bd mol pour <proto-id>`
 
+A cook expands at most 10,000 steps in total across every loop, range,
+`expand`, and `map` in the formula. A formula that expands past that fails
+with `formula expansion limit exceeded`; split it into smaller formulas.
+
 ## Example: Release Formula
 
 ```toml
