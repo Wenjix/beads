@@ -97,19 +97,27 @@ func detectTestPollution(issues []*types.Issue) []pollutionResult {
 }
 
 func backupPollutedIssues(polluted []pollutionResult, path string) error {
-	var backup strings.Builder
+	w, err := atomicfile.WriterNoFollow(path, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to write backup file: %w", err)
+	}
 	// Write each issue as JSONL
 	for _, p := range polluted {
 		data, err := json.Marshal(p.issue)
 		if err != nil {
+			_ = w.Abort()
 			return fmt.Errorf("failed to marshal issue %s: %w", p.issue.ID, err)
 		}
-
-		backup.Write(data)
-		backup.WriteByte('\n')
+		if _, err := w.Write(data); err != nil {
+			_ = w.Abort()
+			return fmt.Errorf("failed to write backup file: %w", err)
+		}
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			_ = w.Abort()
+			return fmt.Errorf("failed to write backup file: %w", err)
+		}
 	}
-
-	if err := atomicfile.WriteFileNoFollow(path, []byte(backup.String()), 0600); err != nil {
+	if err := w.Close(); err != nil {
 		return fmt.Errorf("failed to write backup file: %w", err)
 	}
 	return nil

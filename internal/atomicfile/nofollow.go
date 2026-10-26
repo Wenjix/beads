@@ -41,3 +41,13 @@ func WriteFileNoFollow(path string, data []byte, perm os.FileMode) error {
 	}
 	return WriteFile(path, data, perm)
 }
+
+// WriterNoFollow returns a Writer that streams to a temp file and atomically
+// renames it over path on Close, refusing a final-component symlink.
+// Parent directories must be trusted.
+func WriterNoFollow(path string, perm os.FileMode) (*Writer, error) {
+	if err := rejectSymlink(path); err != nil {
+		return nil, err
+	}
+	return Create(path, perm)
+}
