@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/config"
 )
 
 // TestReadonlyModeBlocksWrites verifies that --readonly blocks write operations
@@ -163,17 +164,82 @@ func TestDoltPublishingCommandsRefusedInReadonly(t *testing.T) {
 	t.Cleanup(func() { readonlyMode = originalMode })
 	readonlyMode = true
 
-	for _, cmd := range []*cobra.Command{doltPushCmd, doltCleanDatabasesCmd} {
-		t.Run(cmd.Name(), func(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  *cobra.Command
+		args []string
+		want string
+	}{
+		{
+			name: "dolt push",
+			cmd:  doltPushCmd,
+			want: "operation 'dolt push' is not allowed in read-only mode",
+		},
+		{
+			name: "dolt clean-databases",
+			cmd:  doltCleanDatabasesCmd,
+			want: "operation 'dolt clean-databases' is not allowed in read-only mode",
+		},
+		{
+			name: "dolt remote reset-data",
+			cmd:  doltRemoteResetDataCmd,
+			args: []string{"origin"},
+			want: "operation 'dolt remote reset-data' is not allowed in read-only mode",
+		},
+		{
+			name: "federation sync",
+			cmd:  federationSyncCmd,
+			want: "operation 'federation sync' is not allowed in read-only mode",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var err error
-			stderr := captureStderr(t, func() { err = cmd.RunE(cmd, nil) })
+			stderr := captureStderr(t, func() { err = tc.cmd.RunE(tc.cmd, tc.args) })
 			code, ok := exitCodeFromError(err)
 			if !ok || code != 1 {
 				t.Fatalf("RunE error = %v, want exit code 1", err)
 			}
-			want := "operation 'dolt " + cmd.Name() + "' is not allowed in read-only mode"
-			if !strings.Contains(stderr, want) {
-				t.Fatalf("stderr = %q, want %q", stderr, want)
+			if !strings.Contains(stderr, tc.want) {
+				t.Fatalf("stderr = %q, want %q", stderr, tc.want)
+			}
+		})
+	}
+}
+
+func TestDoltPublishingCommandsRefusedWhenNoPushSet(t *testing.T) {
+	t.Setenv("BD_NO_PUSH", "true")
+	config.ResetForTesting()
+	t.Cleanup(func() { config.ResetForTesting() })
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("config.Initialize: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+		args []string
+	}{
+		{
+			name: "dolt remote reset-data",
+			cmd:  doltRemoteResetDataCmd,
+			args: []string{"origin"},
+		},
+		{
+			name: "federation sync",
+			cmd:  federationSyncCmd,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var err error
+			stderr := captureStderr(t, func() { err = tc.cmd.RunE(tc.cmd, tc.args) })
+			code, ok := exitCodeFromError(err)
+			if !ok || code != 1 {
+				t.Fatalf("RunE error = %v, want exit code 1", err)
+			}
+			if !strings.Contains(stderr, "no-push: true") {
+				t.Fatalf("stderr = %q, want a refusal naming no-push: true", stderr)
 			}
 		})
 	}

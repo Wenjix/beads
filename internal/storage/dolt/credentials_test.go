@@ -1374,13 +1374,26 @@ func TestPushRefusedOnStrictReadOnlyStore(t *testing.T) {
 	ctx := context.Background()
 	s := &DoltStore{readOnly: true, remote: "origin", branch: "main"}
 	for name, push := range map[string]func() error{
-		"Push":       func() error { return s.Push(ctx) },
-		"ForcePush":  func() error { return s.ForcePush(ctx) },
-		"PushRemote": func() error { return s.PushRemote(ctx, "origin", false) },
+		"Push":               func() error { return s.Push(ctx) },
+		"ForcePush":          func() error { return s.ForcePush(ctx) },
+		"PushRemote":         func() error { return s.PushRemote(ctx, "origin", false) },
+		"PushTo":             func() error { return s.PushTo(ctx, "origin") },
+		"filteredPushToPeer": func() error { return s.filteredPushToPeer(ctx, "origin", []string{"wisp"}) },
 	} {
 		if err := push(); err == nil || !strings.Contains(err.Error(), "read-only") {
 			t.Errorf("%s on read-only store: err = %v, want read-only refusal", name, err)
 		}
+	}
+
+	// Stores opened read-only only because the CLI command was classified as a
+	// read (e.g. bd list, bd show) must not be blocked from auto-pushing: they
+	// pass the readOnly && !classifiedRead gate and reach validateRemoteOperand.
+	classified := &DoltStore{readOnly: true, classifiedRead: true, remote: "--force", branch: "main"}
+	if err := classified.Push(ctx); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+		t.Errorf("classifiedRead Push: err = %v, want to pass read-only gate and hit remote operand check", err)
+	}
+	if err := classified.PushTo(ctx, "--force"); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+		t.Errorf("classifiedRead PushTo: err = %v, want to pass read-only gate and hit remote operand check", err)
 	}
 }
 
@@ -1393,6 +1406,12 @@ func TestRemoteOperandRejectsOptionShapedNames(t *testing.T) {
 		}
 		if err := s.PullRemote(ctx, remote); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
 			t.Errorf("PullRemote(%q): err = %v, want option-shaped name refusal", remote, err)
+		}
+		if err := s.PushTo(ctx, remote); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+			t.Errorf("PushTo(%q): err = %v, want option-shaped name refusal", remote, err)
+		}
+		if _, err := s.PullFrom(ctx, remote); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+			t.Errorf("PullFrom(%q): err = %v, want option-shaped name refusal", remote, err)
 		}
 	}
 	for _, remote := range []string{"origin", "my-remote", "peer_2"} {

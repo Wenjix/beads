@@ -311,9 +311,11 @@ func TestMaybeAutoPush_HonorsNoPush(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		noPush     bool
+		envNoPush  string
 		wantPushes int
 	}{
-		{name: "no-push set", noPush: true, wantPushes: 0},
+		{name: "no-push set in config", noPush: true, wantPushes: 0},
+		{name: "BD_NO_PUSH overrides shared config auto-push", noPush: false, envNoPush: "true", wantPushes: 0},
 		{name: "no-push unset", noPush: false, wantPushes: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -324,14 +326,22 @@ func TestMaybeAutoPush_HonorsNoPush(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{}`), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt:\n  auto-push: true\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			t.Setenv("BEADS_DIR", beadsDir)
 			t.Setenv("BD_DOLT_AUTO_PUSH", "true")
+			if tc.envNoPush != "" {
+				t.Setenv("BD_NO_PUSH", tc.envNoPush)
+			}
 			config.ResetForTesting()
 			t.Cleanup(func() { config.ResetForTesting() })
 			if err := config.Initialize(); err != nil {
 				t.Fatalf("config.Initialize: %v", err)
 			}
-			config.Set("no-push", tc.noPush)
+			if tc.noPush {
+				config.Set("no-push", true)
+			}
 
 			oldStore, oldCmdCtx, oldUseGlobals := store, cmdCtx, testModeUseGlobals
 			testModeUseGlobals = true
