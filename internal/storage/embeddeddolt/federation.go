@@ -534,6 +534,11 @@ func (s *EmbeddedDoltStore) filteredPushToPeer(ctx context.Context, peer string,
 			if err := versioncontrolops.Push(ctx, db, peer, stagingBranch+":"+s.branch, user); err != nil {
 				return err
 			}
+			if removed > 0 {
+				if err := versioncontrolops.KeepFilteredPushLocal(ctx, filterConn, s.branch, stagingBranch); err != nil {
+					return err
+				}
+			}
 			versioncontrolops.WarnExcludedHistory(removed)
 			return nil
 		})
