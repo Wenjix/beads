@@ -87,3 +87,59 @@ func TestBatchApplyHydratesEachIssueOnce(t *testing.T) {
 		t.Errorf("items report %d distinct versions, want each item's own token after it", len(versions))
 	}
 }
+
+// TestBatchApplyPersistenceMoveBeforeLaterItem pins that an item that moves a
+// created row between planes, followed by another item on that row, still
+// reports its version from the row's new plane instead of failing the batch.
+func TestBatchApplyPersistenceMoveBeforeLaterItem(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	for _, tc := range []struct {
+		name      string
+		ephemeral bool
+		to        issueops.PersistenceMode
+	}{
+		{name: "durable to wisp", to: issueops.PersistenceModeEphemeral},
+		{name: "wisp to durable", ephemeral: true, to: issueops.PersistenceModePersistent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			fixture := newPristineEmbeddedDoltFixture(t, "planemove")
+			t.Cleanup(func() { closeEmbeddedDoltStore(t, fixture.store) })
+			items := []issueops.ApplyItem{
+				{Kind: issueops.ItemCreate, Create: &issueops.CreateItem{Key: "x", Issue: &types.Issue{
+					Title: "x", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask, Ephemeral: tc.ephemeral,
+				}}},
+				{Kind: issueops.ItemUpdate, Update: &issueops.UpdateItem{
+					Target: issueops.Ref{Key: "x"},
+					Patch:  issueops.IssuePatch{Persistence: issueops.Field[issueops.PersistenceMode]{Set: true, Value: tc.to}},
+				}},
+				{Kind: issueops.ItemUpdate, Update: &issueops.UpdateItem{
+					Target: issueops.Ref{Key: "x"},
+					Patch:  issueops.IssuePatch{Title: issueops.Field[string]{Set: true, Value: "x moved"}},
+				}},
+			}
+			db, cleanup, err := openCountedConn(ctx, fixture.dataDir, fixture.database, &sqlcount.Counts{})
+			if err != nil {
+				t.Fatalf("openCountedConn: %v", err)
+			}
+			defer cleanup()
+			tx, err := db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = tx.Rollback() }()
+			result, _, err := storageissueops.ApplyBatchInTx(ctx, tx, batchfixtures.UncappedPlan(issueops.ApplyBatchRequest{Actor: "tester", Items: items}))
+			if err != nil {
+				t.Fatalf("ApplyBatchInTx: %v", err)
+			}
+			moved := result.Items[1]
+			if moved.RowVersion == 0 {
+				t.Errorf("moving item reports no version: %+v", moved)
+			}
+			final := result.Items[2].Issue
+			if final == nil || final.Title != "x moved" || final.Ephemeral == tc.ephemeral {
+				t.Errorf("final snapshot = %+v, want the moved, retitled row", final)
+			}
+		})
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -255,6 +256,10 @@ func (r *applyBatchRun) rowState(ctx context.Context, tx *sql.Tx, id string, hyd
 		isWisp = IsActiveWispInTx(ctx, tx, id)
 	}
 	version, err := readRowVersionInTx(ctx, tx, id, isWisp)
+	if created && errors.Is(err, storage.ErrNotFound) {
+		// A persistence update moved this request's row to the other plane.
+		version, err = readRowVersionInTx(ctx, tx, id, !isWisp)
+	}
 	return version, nil, err
 }
 

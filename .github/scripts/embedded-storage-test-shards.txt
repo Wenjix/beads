@@ -421,6 +421,7 @@
 40 25 TestReadyWorkPageTotal
 40 25 TestWithPeerAuth_RestoresAbsentEnv
 
+40 26 TestBatchApplyPersistenceMoveBeforeLaterItem
 40 26 TestEmbeddedIssueOperationsCreateClosedDerivesTheClosedStamp
 40 26 TestEmbeddedMigration0058CleansOrphanedAndInvalidWispDependenciesRowsBeforeAddingConstraints
 40 26 TestEmbeddedOpenForReadOnlyCommand_LenientGate
