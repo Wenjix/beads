@@ -349,14 +349,15 @@ func (p *proxyServer) ListenAndServe(parentCtx context.Context) error {
 	}
 
 	if err := pidfile.Write(p.rootDir, PIDFileName, pidfile.PidFile{
-		Pid:         os.Getpid(),
-		Port:        dataPort.Port,
-		UpstreamID:  upstreamID,
-		Schema:      pidfile.SchemaV2,
-		Kind:        pidfile.KindProxy,
-		Birth:       string(birth),
-		RootID:      rootID,
-		ControlPort: control.Port(),
+		Pid:          os.Getpid(),
+		Port:         dataPort.Port,
+		UpstreamID:   upstreamID,
+		Schema:       pidfile.SchemaV2,
+		Kind:         pidfile.KindProxy,
+		Birth:        string(birth),
+		RootID:       rootID,
+		ControlPort:  control.Port(),
+		ControlProto: pidfile.ControlProtoIdentMAC,
 	}); err != nil {
 		p.stats.IncBackendStop()
 		_ = stopBackendBounded(p.server)
