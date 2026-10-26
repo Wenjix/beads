@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // TestReadonlyModeBlocksWrites verifies that --readonly blocks write operations
@@ -154,4 +156,25 @@ type capture struct {
 
 func (c *capture) Write(p []byte) (n int, err error) {
 	return c.buf.Write(p)
+}
+
+func TestDoltPublishingCommandsRefusedInReadonly(t *testing.T) {
+	originalMode := readonlyMode
+	t.Cleanup(func() { readonlyMode = originalMode })
+	readonlyMode = true
+
+	for _, cmd := range []*cobra.Command{doltPushCmd, doltCleanDatabasesCmd} {
+		t.Run(cmd.Name(), func(t *testing.T) {
+			var err error
+			stderr := captureStderr(t, func() { err = cmd.RunE(cmd, nil) })
+			code, ok := exitCodeFromError(err)
+			if !ok || code != 1 {
+				t.Fatalf("RunE error = %v, want exit code 1", err)
+			}
+			want := "operation 'dolt " + cmd.Name() + "' is not allowed in read-only mode"
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("stderr = %q, want %q", stderr, want)
+			}
+		})
+	}
 }

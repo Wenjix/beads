@@ -1369,3 +1369,35 @@ func TestDecryptWithKeyStaysUnwrappedForRotation(t *testing.T) {
 		t.Errorf("error = %v, want the bare cipher error; classification belongs to decryptPassword", err)
 	}
 }
+
+func TestPushRefusedOnStrictReadOnlyStore(t *testing.T) {
+	ctx := context.Background()
+	s := &DoltStore{readOnly: true, remote: "origin", branch: "main"}
+	for name, push := range map[string]func() error{
+		"Push":       func() error { return s.Push(ctx) },
+		"ForcePush":  func() error { return s.ForcePush(ctx) },
+		"PushRemote": func() error { return s.PushRemote(ctx, "origin", false) },
+	} {
+		if err := push(); err == nil || !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("%s on read-only store: err = %v, want read-only refusal", name, err)
+		}
+	}
+}
+
+func TestRemoteOperandRejectsOptionShapedNames(t *testing.T) {
+	ctx := context.Background()
+	s := &DoltStore{branch: "main"}
+	for _, remote := range []string{"--force", "-f", "--set-upstream"} {
+		if err := s.PushRemote(ctx, remote, false); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+			t.Errorf("PushRemote(%q): err = %v, want option-shaped name refusal", remote, err)
+		}
+		if err := s.PullRemote(ctx, remote); err == nil || !strings.Contains(err.Error(), "must not start with '-'") {
+			t.Errorf("PullRemote(%q): err = %v, want option-shaped name refusal", remote, err)
+		}
+	}
+	for _, remote := range []string{"origin", "my-remote", "peer_2"} {
+		if err := validateRemoteOperand(remote); err != nil {
+			t.Errorf("validateRemoteOperand(%q) = %v, want nil", remote, err)
+		}
+	}
+}
