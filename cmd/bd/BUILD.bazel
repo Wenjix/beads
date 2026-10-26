@@ -407,6 +407,7 @@ go_library(
         "//internal/compact",
         "//internal/config",
         "//internal/configfile",
+        "//internal/creds",
         "//internal/debug",
         "//internal/doltremote",
         "//internal/doltserver",
