@@ -94,6 +94,21 @@ func IsV2(blob []byte) bool {
 	return len(blob) >= len(v2Prefix) && bytes.Equal(blob[:len(v2Prefix)], []byte(v2Prefix))
 }
 
+// DuplicateBlobs returns blobs stored in more than one row. Copies of one ciphertext cannot be told apart, so none of them is migrated.
+func DuplicateBlobs(blobs [][]byte) map[string]bool {
+	counts := make(map[string]int, len(blobs))
+	for _, blob := range blobs {
+		counts[string(blob)]++
+	}
+	duplicates := make(map[string]bool)
+	for blob, count := range counts {
+		if count > 1 {
+			duplicates[blob] = true
+		}
+	}
+	return duplicates
+}
+
 func MigrationDone(dir string) bool {
 	if dir == "" {
 		return false

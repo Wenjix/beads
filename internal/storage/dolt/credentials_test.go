@@ -1529,3 +1529,84 @@ func TestServerLegacyCredentialMigrationRebindsAndMarks(t *testing.T) {
 		t.Fatalf("sqlmock expectations: %v", err)
 	}
 }
+
+func TestServerLegacyCredentialMigrationSkipsDuplicatedLegacyBlobs(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	shared, err := encryptWithKey("shared-password", key)
+	if err != nil {
+		t.Fatalf("encrypt shared password: %v", err)
+	}
+	unique, err := encryptWithKey("unique-password", key)
+	if err != nil {
+		t.Fatalf("encrypt unique password: %v", err)
+	}
+	beadsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(beadsDir, credentialKeyFile), key, 0600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := &DoltStore{db: db, credentialKey: key, beadsDir: beadsDir}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT name, remote_url, username, password_encrypted FROM federation_peers")).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted"}).
+			AddRow("duplicate-a", "https://duplicate-a.example/beads", "user-a", shared).
+			AddRow("duplicate-b", "https://duplicate-b.example/beads", "user-b", shared).
+			AddRow("unique-c", "https://unique-c.example/beads", "user-c", unique))
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE federation_peers SET password_encrypted = ? WHERE name = ?")).
+		WithArgs(sealedPeerPasswordArg{
+			key: key,
+			binding: peercred.Binding{
+				Name: "unique-c", RemoteURL: "https://unique-c.example/beads", Username: "user-c",
+			},
+			password: "unique-password",
+		}, "unique-c").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := store.migrateLegacyPeerCredentials(t.Context()); err != nil {
+		t.Fatalf("migrateLegacyPeerCredentials: %v", err)
+	}
+	if !peercred.MigrationDone(beadsDir) {
+		t.Fatal("migration marker was not written")
+	}
+	now := time.Now()
+	for _, name := range []string{"duplicate-a", "duplicate-b"} {
+		mock.ExpectQuery(regexp.QuoteMeta("FROM federation_peers WHERE name = ?")).
+			WithArgs(name).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"name", "remote_url", "username", "password_encrypted",
+				"sovereignty", "last_sync", "created_at", "updated_at",
+			}).AddRow(name, "https://"+name+".example/beads", "user-"+name[len("duplicate-"):], shared, "T2", nil, now, now))
+		if _, err := store.GetFederationPeer(t.Context(), name); !errors.Is(err, peercred.ErrLegacyCredential) {
+			t.Fatalf("GetFederationPeer(%s) error = %v, want ErrLegacyCredential", name, err)
+		}
+	}
+	binding := peercred.Binding{Name: "unique-c", RemoteURL: "https://unique-c.example/beads", Username: "user-c"}
+	uniqueV2, err := peercred.Seal(key, "unique-password", binding)
+	if err != nil {
+		t.Fatalf("seal unique-c test credential: %v", err)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("FROM federation_peers WHERE name = ?")).
+		WithArgs("unique-c").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"name", "remote_url", "username", "password_encrypted",
+			"sovereignty", "last_sync", "created_at", "updated_at",
+		}).AddRow("unique-c", binding.RemoteURL, binding.Username, uniqueV2, "T2", nil, now, now))
+	got, err := store.GetFederationPeer(t.Context(), "unique-c")
+	if err != nil {
+		t.Fatalf("GetFederationPeer(unique-c): %v", err)
+	}
+	if got.Password != "unique-password" {
+		t.Fatalf("unique-c password = %q, want unique-password", got.Password)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sqlmock expectations: %v", err)
+	}
+}

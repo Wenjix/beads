@@ -140,6 +140,61 @@ func TestFederationLegacyCredentialsMigrateOnOpen(t *testing.T) {
 	}
 }
 
+func TestFederationLegacyCredentialsSkipsDuplicatedLegacyBlobs(t *testing.T) {
+	ctx := t.Context()
+	store := newPeerAuthTestStore(t)
+	peers := []*storage.FederationPeer{
+		{Name: "duplicate-a", RemoteURL: "file:///tmp/duplicate-a", Username: "user-a", Password: "seed"},
+		{Name: "duplicate-b", RemoteURL: "file:///tmp/duplicate-b", Username: "user-b", Password: "seed"},
+		{Name: "unique-c", RemoteURL: "file:///tmp/unique-c", Username: "user-c", Password: "seed"},
+	}
+	for _, peer := range peers {
+		if err := store.AddFederationPeer(ctx, peer); err != nil {
+			t.Fatalf("AddFederationPeer(%s): %v", peer.Name, err)
+		}
+	}
+	shared := legacyCredentialForTest(t, store.credentialKey, "shared-password")
+	unique := legacyCredentialForTest(t, store.credentialKey, "unique-password")
+	if err := updatePeerCredentialForTest(ctx, store, "duplicate-a", shared); err != nil {
+		t.Fatalf("write duplicate-a legacy ciphertext: %v", err)
+	}
+	if err := updatePeerCredentialForTest(ctx, store, "duplicate-b", shared); err != nil {
+		t.Fatalf("write duplicate-b legacy ciphertext: %v", err)
+	}
+	if err := updatePeerCredentialForTest(ctx, store, "unique-c", unique); err != nil {
+		t.Fatalf("write unique-c legacy ciphertext: %v", err)
+	}
+	marker := filepath.Join(store.beadsDir, peercred.MigrationMarkerFile)
+	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove migration marker: %v", err)
+	}
+	beadsDir := store.beadsDir
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reopened, err := Open(ctx, beadsDir, "fedauth", "main")
+	if err != nil {
+		t.Fatalf("Open after duplicate legacy writes: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if !peercred.MigrationDone(beadsDir) {
+		t.Fatal("credential migration marker was not written")
+	}
+	got, err := reopened.GetFederationPeer(ctx, "unique-c")
+	if err != nil {
+		t.Fatalf("GetFederationPeer(unique-c): %v", err)
+	}
+	if got.Password != "unique-password" {
+		t.Fatalf("unique-c password = %q, want unique-password", got.Password)
+	}
+	for _, name := range []string{"duplicate-a", "duplicate-b"} {
+		if _, err := reopened.GetFederationPeer(ctx, name); !errors.Is(err, peercred.ErrLegacyCredential) {
+			t.Fatalf("GetFederationPeer(%s) error = %v, want ErrLegacyCredential", name, err)
+		}
+	}
+}
+
 func TestFederationLegacyCredentialsRejectedAfterMigrationMarker(t *testing.T) {
 	ctx := t.Context()
 	store := newPeerAuthTestStore(t)

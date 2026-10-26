@@ -102,8 +102,18 @@ func (s *EmbeddedDoltStore) migrateLegacyPeerCredentials(ctx context.Context) er
 		if err := rows.Close(); err != nil {
 			return fmt.Errorf("close legacy peer credentials: %w", err)
 		}
+		legacyBlobs := make([][]byte, 0, len(entries))
+		for _, item := range entries {
+			if !peercred.IsV2(item.blob) {
+				legacyBlobs = append(legacyBlobs, item.blob)
+			}
+		}
+		duplicateBlobs := peercred.DuplicateBlobs(legacyBlobs)
 		for _, item := range entries {
 			if peercred.IsV2(item.blob) {
+				continue
+			}
+			if duplicateBlobs[string(item.blob)] {
 				continue
 			}
 			password, err := peercred.OpenLegacy(s.credentialKey, item.blob)

@@ -156,6 +156,19 @@ func TestOpenV2ShortCiphertext(t *testing.T) {
 	}
 }
 
+func TestDuplicateBlobs(t *testing.T) {
+	shared := []byte{1, 2, 3}
+	unique := []byte{4, 5, 6}
+	duplicates := DuplicateBlobs([][]byte{shared, unique, shared, []byte{7}})
+
+	if len(duplicates) != 1 || !duplicates[string(shared)] {
+		t.Fatalf("DuplicateBlobs() = %#v, want only shared blob", duplicates)
+	}
+	if duplicates[string(unique)] {
+		t.Fatalf("DuplicateBlobs() marked unique blob as duplicate")
+	}
+}
+
 func TestMigrationMarker(t *testing.T) {
 	dir := t.TempDir()
 	if MigrationDone(dir) {
