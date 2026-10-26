@@ -61,6 +61,10 @@ Formulas are high-level workflow templates that support:
   - Composition rules for bonding formulas together
   - Inheritance via extends
 
+One cook expands loops, ranges, expand and map rules into at most 10000
+steps in total. A formula that expands past that fails with "formula
+expansion limit exceeded".
+
 The --persist flag enables the legacy behavior of writing the proto
 to the database. This is useful when you want to reuse the same
 proto multiple times without re-cooking.
