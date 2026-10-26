@@ -10,10 +10,11 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/git"
 )
 
 func TestPreCommitExportRejectsUnsafePaths(t *testing.T) {
-	for _, name := range []string{"parent", "absolute", "symlink", "symlink-missing-parent", "relative", "nested", "default"} {
+	for _, name := range []string{"parent", "absolute", "symlink", "symlink-missing-parent", "git-config", "git-case", "git-nested", "git-hooks", "git-symlink", "git-dir-alias", "relative", "nested", "default"} {
 		t.Run(name, func(t *testing.T) {
 			isolateBeadsDirForTest(t)
 			root := t.TempDir()
@@ -24,6 +25,8 @@ func TestPreCommitExportRejectsUnsafePaths(t *testing.T) {
 			runGitForWorktreeTest(t, repo, "add", ".beads/metadata.json")
 			t.Chdir(repo)
 			t.Setenv("GIT_DIR", filepath.Join(repo, ".git"))
+			git.ResetCaches()
+			t.Cleanup(git.ResetCaches)
 			t.Setenv("BEADS_DIR", beadsDir)
 			initConfigForTest(t)
 			outside := filepath.Join(root, "outside")
@@ -31,7 +34,31 @@ func TestPreCommitExportRejectsUnsafePaths(t *testing.T) {
 			writeFileForWorktreeTest(t, filepath.Join(repo, "outside"), []byte("unchanged"))
 			path := "issues.jsonl"
 			valid := false
+			sentinels := []string{filepath.Join(outside, "sentinel"), filepath.Join(repo, "outside")}
 			switch name {
+			case "git-config":
+				path = ".git/config"
+			case "git-case":
+				path = ".GIT/config"
+			case "git-nested":
+				path = "sub/.GIT/x"
+			case "git-hooks":
+				path = ".git/hooks/pre-commit"
+			case "git-symlink", "git-dir-alias":
+				gitDir := filepath.Join(repo, ".git")
+				if name == "git-dir-alias" {
+					gitDir = filepath.Join(repo, "git-admin")
+					if err := os.Rename(filepath.Join(repo, ".git"), gitDir); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("GIT_DIR", gitDir)
+					git.ResetCaches()
+				}
+				if err := os.Symlink(gitDir, filepath.Join(beadsDir, "git-link")); err != nil {
+					t.Fatal(err)
+				}
+				path = "git-link/sentinel"
+				sentinels = append(sentinels, filepath.Join(gitDir, "sentinel"))
 			case "parent":
 				path = "../outside"
 			case "absolute":
@@ -50,6 +77,12 @@ func TestPreCommitExportRejectsUnsafePaths(t *testing.T) {
 				path, valid = "exports/new/issues.jsonl", true
 			case "default":
 				path, valid = "", true
+			}
+			if strings.HasPrefix(name, "git-") && name != "git-symlink" && name != "git-dir-alias" {
+				sentinels = append(sentinels, filepath.Join(beadsDir, path))
+			}
+			for _, sentinel := range sentinels {
+				writeFileForWorktreeTest(t, sentinel, []byte("unchanged"))
 			}
 			bin := filepath.Join(root, "bin")
 			marker := filepath.Join(root, "called")
@@ -85,7 +118,7 @@ func TestPreCommitExportRejectsUnsafePaths(t *testing.T) {
 					t.Error("created directory outside repository")
 				}
 			}
-			for _, sentinel := range []string{filepath.Join(outside, "sentinel"), filepath.Join(repo, "outside")} {
+			for _, sentinel := range sentinels {
 				if got := readFileForWorktreeTest(t, sentinel); got != "unchanged" {
 					t.Errorf("sentinel changed: %q", got)
 				}
@@ -191,7 +224,13 @@ func TestMetadataDatabaseNames(t *testing.T) {
 }
 
 func TestHookExportPathResolvesRoot(t *testing.T) {
+	isolateBeadsDirForTest(t)
 	root := t.TempDir()
+	runGitForWorktreeTest(t, root, "init", "-q")
+	t.Chdir(root)
+	t.Setenv("GIT_DIR", filepath.Join(root, ".git"))
+	git.ResetCaches()
+	t.Cleanup(git.ResetCaches)
 	link := filepath.Join(t.TempDir(), "repo")
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatal(err)

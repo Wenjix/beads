@@ -1954,6 +1954,43 @@ func confinedHookExportPath(dir, path, repoRoot string) (string, error) {
 	if !within(parent, resolvedRoot) {
 		return "", fmt.Errorf("parent resolves outside the repository: %q", path)
 	}
+	resolvedPath := filepath.Join(parent, filepath.Base(fullPath))
+	if resolved, err := filepath.EvalSymlinks(fullPath); err == nil {
+		resolvedPath = resolved
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if !within(resolvedPath, resolvedRoot) {
+		return "", fmt.Errorf("path resolves outside the repository: %q", path)
+	}
+	for _, candidate := range []struct{ path, root string }{{fullPath, root}, {fullPath, resolvedRoot}, {resolvedPath, resolvedRoot}} {
+		rel, err := filepath.Rel(candidate.root, candidate.path)
+		if err != nil {
+			return "", err
+		}
+		for _, component := range strings.Split(rel, string(filepath.Separator)) {
+			if strings.EqualFold(component, ".git") {
+				return "", fmt.Errorf("path targets git metadata: %q", path)
+			}
+		}
+	}
+	for _, getDir := range []func() (string, error){git.GetGitDir, git.GetGitCommonDir} {
+		gitDir, err := getDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine git metadata directory: %w", err)
+		}
+		gitDir, err = filepath.Abs(gitDir)
+		if err != nil {
+			return "", err
+		}
+		gitDir, err = filepath.EvalSymlinks(gitDir)
+		if err != nil {
+			return "", err
+		}
+		if within(resolvedPath, gitDir) {
+			return "", fmt.Errorf("path resolves into git metadata: %q", path)
+		}
+	}
 	return fullPath, nil
 }
 
