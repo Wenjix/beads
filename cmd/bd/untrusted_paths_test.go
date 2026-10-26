@@ -327,6 +327,34 @@ func TestHooksRefuseSymlinkedHooksDirAndUninstallSymlinkedHook(t *testing.T) {
 	if got := readFileForWorktreeTest(t, markedTarget); got != markedContent {
 		t.Fatalf("symlinked hook target modified on uninstall: %q", got)
 	}
+
+	// .beads itself symlinked, reached through discovery rather than
+	// BEADS_DIR (which canonicalizes the link away before it is checked):
+	// the hooks dir inside the target is real, so the per-hook parent probe
+	// passes and only validateHooksDir's base-dir check refuses the write.
+	outsideBeads := filepath.Join(root, "outside-beads")
+	if err := os.MkdirAll(filepath.Join(outsideBeads, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFileForWorktreeTest(t, filepath.Join(outsideBeads, "metadata.json"), []byte("{}\n"))
+	linkedRepo := filepath.Join(root, "linked")
+	if err := os.MkdirAll(linkedRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGitForWorktreeTest(t, linkedRepo, "init", "-q")
+	if err := os.Symlink(outsideBeads, filepath.Join(linkedRepo, ".beads")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", "")
+	t.Chdir(linkedRepo)
+	git.ResetCaches()
+
+	if err := installHooksWithOptions([]string{"pre-commit"}, false, false, false, true); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected installHooksWithOptions to refuse symlinked .beads, got %v", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(outsideBeads, "hooks")); err != nil || len(entries) != 0 {
+		t.Fatalf("outside hooks dir touched through symlinked .beads: entries=%v err=%v", entries, err)
+	}
 }
 
 func TestMaybeAutoExportRejectsUnsafePaths(t *testing.T) {

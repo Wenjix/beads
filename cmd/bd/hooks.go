@@ -2116,15 +2116,36 @@ func confinedExportPath(dir, path, repoRoot string, requireRepoRoot bool) (strin
 		}
 	}
 	if repoRoot != "" {
-		for _, getDir := range []func() (string, error){git.GetGitDir, git.GetGitCommonDir} {
-			gitDir, err := getDir()
-			if err != nil {
-				if requireRepoRoot {
-					return "", fmt.Errorf("cannot determine git metadata directory: %w", err)
+		var gitDirs []string
+		// In hook context the inherited GIT_DIR is authoritative for the
+		// repository this hook serves; a fresh `git rev-parse` runs in
+		// whatever cwd the hook has, which may name no repository at all.
+		// GIT_COMMON_DIR names the shared dir when set; otherwise a linked
+		// worktree's admin dir carries a commondir file — the same file
+		// --git-common-dir itself reads.
+		if envGitDir := strings.TrimSpace(os.Getenv("GIT_DIR")); envGitDir != "" {
+			gitDirs = append(gitDirs, envGitDir)
+			if common := strings.TrimSpace(os.Getenv("GIT_COMMON_DIR")); common != "" {
+				gitDirs = append(gitDirs, common)
+			} else if data, rerr := os.ReadFile(filepath.Join(envGitDir, "commondir")); rerr == nil { //nolint:gosec // G304: GIT_DIR/commondir is a well-known git internal file.
+				if rel := strings.TrimSpace(string(data)); rel != "" {
+					gitDirs = append(gitDirs, filepath.Join(envGitDir, rel))
 				}
-				continue
 			}
-			gitDir, err = filepath.Abs(gitDir)
+		} else {
+			for _, getDir := range []func() (string, error){git.GetGitDir, git.GetGitCommonDir} {
+				gitDir, err := getDir()
+				if err != nil {
+					if requireRepoRoot {
+						return "", fmt.Errorf("cannot determine git metadata directory: %w", err)
+					}
+					continue
+				}
+				gitDirs = append(gitDirs, gitDir)
+			}
+		}
+		for _, dir := range gitDirs {
+			gitDir, err := filepath.Abs(dir)
 			if err != nil {
 				return "", err
 			}

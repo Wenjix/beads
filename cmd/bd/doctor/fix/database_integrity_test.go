@@ -159,7 +159,7 @@ func TestDatabaseIntegrity_RefusesEscapingAndSymlinkedDoltDataDir(t *testing.T) 
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"backend":"dolt","dolt_data_dir":`+`"`+ filepath.ToSlash(rel) +`"}`), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"backend":"dolt","dolt_data_dir":`+`"`+filepath.ToSlash(rel)+`"}`), 0o600); err != nil {
 			t.Fatal(err)
 		}
 
