@@ -18,7 +18,6 @@ import (
 	"time"
 
 	mysql "github.com/go-sql-driver/mysql"
-	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -618,104 +617,6 @@ func TestFederationPushPullMethods(t *testing.T) {
 		t.Log("Fetch from nonexistent peer succeeded (unexpected)")
 	} else {
 		t.Logf("✓ Fetch correctly failed: %v", err)
-	}
-}
-
-func TestFilteredSyncKeepsLocalExcludedIssues(t *testing.T) {
-	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
-	config.ResetForTesting()
-	if err := config.Initialize(); err != nil {
-		t.Fatalf("config.Initialize: %v", err)
-	}
-	t.Cleanup(config.ResetForTesting)
-
-	store, cleanup := setupConcurrentTestStore(t)
-	defer cleanup()
-	ctx, cancel := testContext(t)
-	defer cancel()
-	versionWispTablesForFilteredPush(t, ctx, store)
-
-	peer := &storage.FederationPeer{
-		Name: "filtered-peer", RemoteURL: "file://" + filepath.Join(t.TempDir(), "remote"),
-	}
-	if err := store.AddFederationPeer(ctx, peer); err != nil {
-		t.Fatalf("AddFederationPeer: %v", err)
-	}
-	kept := &types.Issue{
-		ID: "filtered-kept", Title: "kept", Status: types.StatusOpen,
-		Priority: 2, IssueType: types.TypeTask,
-	}
-	if err := store.CreateIssue(ctx, kept, "tester"); err != nil {
-		t.Fatalf("CreateIssue(%s): %v", kept.ID, err)
-	}
-	const excludedID = "filtered-excluded"
-	if _, err := store.db.ExecContext(ctx, `INSERT INTO issues
-		(id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, ephemeral)
-		VALUES (?, 'excluded', '', '', '', '', 'open', 2, 'task', 1)`, excludedID); err != nil {
-		t.Fatalf("seed durable-plane excluded issue: %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, "INSERT INTO labels (issue_id, label) VALUES (?, ?)", excludedID, "private"); err != nil {
-		t.Fatalf("label excluded issue: %v", err)
-	}
-	if err := store.Commit(ctx, "seed filtered federation issues"); err != nil && !isDoltNothingToCommit(err) {
-		t.Fatalf("commit filtered federation issues: %v", err)
-	}
-	if err := store.PushTo(ctx, peer.Name); err != nil {
-		t.Fatalf("initial PushTo: %v", err)
-	}
-
-	var initialExcludedCount int
-	if err := store.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM issues AS OF 'remotes/filtered-peer/main' WHERE id = ? AND ephemeral = 1",
-		excludedID).Scan(&initialExcludedCount); err != nil {
-		t.Fatalf("count initial peer issue: %v", err)
-	}
-	if initialExcludedCount != 1 {
-		t.Fatalf("pre-sync fixture count: excluded=%d, want 1", initialExcludedCount)
-	}
-	config.Set("federation.exclude_types", []string{"wisp"})
-
-	for syncNumber := 1; syncNumber <= 2; syncNumber++ {
-		result, err := store.Sync(ctx, peer.Name, "")
-		if err != nil {
-			t.Fatalf("Sync %d: %v", syncNumber, err)
-		}
-		if !result.Pushed || result.PushError != nil {
-			t.Fatalf("Sync %d push result: pushed=%t push error=%v", syncNumber, result.Pushed, result.PushError)
-		}
-
-		var localExcludedCount, localKeptCount, localLabelCount int
-		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues WHERE id = ?", excludedID).Scan(&localExcludedCount); err != nil {
-			t.Fatalf("Sync %d count local excluded issue: %v", syncNumber, err)
-		}
-		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues WHERE id = ?", kept.ID).Scan(&localKeptCount); err != nil {
-			t.Fatalf("Sync %d count local kept issue: %v", syncNumber, err)
-		}
-		if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM labels WHERE issue_id = ? AND label = ?",
-			excludedID, "private").Scan(&localLabelCount); err != nil {
-			t.Fatalf("Sync %d count excluded label: %v", syncNumber, err)
-		}
-		if localExcludedCount != 1 || localKeptCount != 1 {
-			t.Fatalf("after Sync %d local counts: excluded=%d kept=%d, want 1 and 1",
-				syncNumber, localExcludedCount, localKeptCount)
-		}
-		if localLabelCount != 1 {
-			t.Fatalf("after Sync %d excluded label count = %d, want 1", syncNumber, localLabelCount)
-		}
-
-		var peerExcludedCount, peerKeptCount int
-		if err := store.db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM issues AS OF 'remotes/filtered-peer/main' WHERE id = ?", excludedID).Scan(&peerExcludedCount); err != nil {
-			t.Fatalf("Sync %d count excluded peer issue: %v", syncNumber, err)
-		}
-		if err := store.db.QueryRowContext(ctx,
-			"SELECT COUNT(*) FROM issues AS OF 'remotes/filtered-peer/main' WHERE id = ?", kept.ID).Scan(&peerKeptCount); err != nil {
-			t.Fatalf("Sync %d count kept peer issue: %v", syncNumber, err)
-		}
-		if peerExcludedCount != 0 || peerKeptCount != 1 {
-			t.Fatalf("after Sync %d pushed tip counts: excluded=%d kept=%d, want 0 and 1",
-				syncNumber, peerExcludedCount, peerKeptCount)
-		}
 	}
 }
 

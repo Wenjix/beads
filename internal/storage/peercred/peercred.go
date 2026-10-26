@@ -109,6 +109,15 @@ func DuplicateBlobs(blobs [][]byte) map[string]bool {
 	return duplicates
 }
 
+// RemoteURLMatches reports whether a local Dolt remote URL matches the peer
+// row's remote_url after canonical comparison, and both are non-empty.
+func RemoteURLMatches(localRemoteURL, peerRemoteURL string) bool {
+	if localRemoteURL == "" || peerRemoteURL == "" {
+		return false
+	}
+	return doltremote.CanonicalForComparison(localRemoteURL) == doltremote.CanonicalForComparison(peerRemoteURL)
+}
+
 func MigrationDone(dir string) bool {
 	if dir == "" {
 		return false

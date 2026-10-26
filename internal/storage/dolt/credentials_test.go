@@ -1510,9 +1510,9 @@ func TestServerLegacyCredentialMigrationRebindsAndMarks(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	binding := peercred.Binding{Name: "legacy", RemoteURL: "https://legacy.example/beads", Username: "legacy-user"}
 	store := &DoltStore{db: db, credentialKey: key, beadsDir: beadsDir}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT name, remote_url, username, password_encrypted FROM federation_peers")).
-		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted"}).
-			AddRow(binding.Name, binding.RemoteURL, binding.Username, legacy))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')")).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted", "local_remote_url"}).
+			AddRow(binding.Name, binding.RemoteURL, binding.Username, legacy, "git+https://legacy.example/beads.git"))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE federation_peers SET password_encrypted = ? WHERE name = ?")).
 		WithArgs(sealedPeerPasswordArg{key: key, binding: binding, password: "legacy-password"}, binding.Name).
@@ -1543,6 +1543,14 @@ func TestServerLegacyCredentialMigrationSkipsDuplicatedLegacyBlobs(t *testing.T)
 	if err != nil {
 		t.Fatalf("encrypt unique password: %v", err)
 	}
+	moved, err := encryptWithKey("moved-password", key)
+	if err != nil {
+		t.Fatalf("encrypt moved password: %v", err)
+	}
+	diverged, err := encryptWithKey("diverged-password", key)
+	if err != nil {
+		t.Fatalf("encrypt diverged password: %v", err)
+	}
 	beadsDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(beadsDir, credentialKeyFile), key, 0600); err != nil {
 		t.Fatalf("write key file: %v", err)
@@ -1553,11 +1561,13 @@ func TestServerLegacyCredentialMigrationSkipsDuplicatedLegacyBlobs(t *testing.T)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	store := &DoltStore{db: db, credentialKey: key, beadsDir: beadsDir}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT name, remote_url, username, password_encrypted FROM federation_peers")).
-		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted"}).
-			AddRow("duplicate-a", "https://duplicate-a.example/beads", "user-a", shared).
-			AddRow("duplicate-b", "https://duplicate-b.example/beads", "user-b", shared).
-			AddRow("unique-c", "https://unique-c.example/beads", "user-c", unique))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')")).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted", "local_remote_url"}).
+			AddRow("duplicate-a", "https://duplicate-a.example/beads", "user-a", shared, "https://duplicate-a.example/beads").
+			AddRow("duplicate-b", "https://duplicate-b.example/beads", "user-b", shared, "https://duplicate-b.example/beads").
+			AddRow("moved-no-remote", "https://attacker.example/beads", "user-m", moved, "").
+			AddRow("moved-diverged", "https://attacker.example/beads", "user-d", diverged, "https://good.example/beads").
+			AddRow("unique-c", "https://unique-c.example/beads", "user-c", unique, "https://unique-c.example/beads"))
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE federation_peers SET password_encrypted = ? WHERE name = ?")).
 		WithArgs(sealedPeerPasswordArg{

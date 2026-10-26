@@ -2,14 +2,12 @@ package versioncontrolops
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sync"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
-	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 // FilterConn supports branch filtering and transactional blocked-state repair.
@@ -64,50 +62,6 @@ func StageFilteredBranch(ctx context.Context, conn FilterConn, sourceBranch, sta
 		return removed, fmt.Errorf("federation filter: restore branch %s: %w", sourceBranch, err)
 	}
 	return removed, nil
-}
-
-// KeepFilteredPushLocal makes sourceBranch descend from the pushed filtered commit without taking its deletions, so merging the peer branch back cannot delete local excluded issues.
-func KeepFilteredPushLocal(ctx context.Context, conn FilterConn, sourceBranch, stagingBranch string) error {
-	restoreSource := func(cause error) error {
-		if err := CheckoutBranch(context.WithoutCancel(ctx), conn, sourceBranch); err != nil {
-			cause = errors.Join(cause, fmt.Errorf("restore branch %s: %w", sourceBranch, err))
-		}
-		return fmt.Errorf("federation filter: keep excluded issues local: %w", cause)
-	}
-	abortAndRestore := func(cause error) error {
-		cleanupCtx := context.WithoutCancel(ctx)
-		if err := schema.DrainCall(cleanupCtx, conn, "CALL DOLT_MERGE('--abort')"); err != nil {
-			cause = errors.Join(cause, fmt.Errorf("abort merge: %w", err))
-		}
-		if err := CheckoutBranch(cleanupCtx, conn, sourceBranch); err != nil {
-			cause = errors.Join(cause, fmt.Errorf("restore branch %s: %w", sourceBranch, err))
-		}
-		return fmt.Errorf("federation filter: keep excluded issues local: %w", cause)
-	}
-
-	if err := CheckoutBranch(ctx, conn, stagingBranch); err != nil {
-		return restoreSource(fmt.Errorf("checkout staging branch %s: %w", stagingBranch, err))
-	}
-	if err := schema.DrainCall(ctx, conn, "CALL DOLT_REVERT('HEAD')"); err != nil {
-		return restoreSource(fmt.Errorf("revert filtered staging commit: %w", err))
-	}
-	if err := CheckoutBranch(ctx, conn, sourceBranch); err != nil {
-		return restoreSource(fmt.Errorf("checkout source branch %s: %w", sourceBranch, err))
-	}
-
-	mergeRow, err := schema.CallReturningRow(ctx, conn, "CALL DOLT_MERGE(?, '-m', ?)",
-		stagingBranch, "federation: keep excluded issues after filtered push")
-	if err != nil {
-		return abortAndRestore(fmt.Errorf("merge reverted staging branch %s: %w", stagingBranch, err))
-	}
-	conflicts, ok := mergeRow.Int("conflicts")
-	if !ok {
-		return abortAndRestore(fmt.Errorf("merge reverted staging branch %s returned no conflict status", stagingBranch))
-	}
-	if conflicts != 0 {
-		return abortAndRestore(fmt.Errorf("merge reverted staging branch %s reported conflicts", stagingBranch))
-	}
-	return nil
 }
 
 // WarnExcludedHistory warns once when the push tip was filtered but history remains readable.

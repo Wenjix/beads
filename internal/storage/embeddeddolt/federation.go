@@ -74,21 +74,24 @@ func (s *EmbeddedDoltStore) migrateLegacyPeerCredentials(ctx context.Context) er
 	}
 	err := s.withConn(ctx, true, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `
-			SELECT name, remote_url, username, password_encrypted FROM federation_peers
-			WHERE password_encrypted IS NOT NULL AND LENGTH(password_encrypted) > 0
+			SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')
+			FROM federation_peers fp
+			LEFT JOIN dolt_remotes dr ON dr.name = fp.name
+			WHERE fp.password_encrypted IS NOT NULL AND LENGTH(fp.password_encrypted) > 0
 		`)
 		if err != nil {
 			return fmt.Errorf("select legacy peer credentials: %w", err)
 		}
 		type entry struct {
-			binding peercred.Binding
-			blob    []byte
+			binding        peercred.Binding
+			localRemoteURL string
+			blob           []byte
 		}
 		var entries []entry
 		for rows.Next() {
 			var item entry
 			var username sql.NullString
-			if err := rows.Scan(&item.binding.Name, &item.binding.RemoteURL, &username, &item.blob); err != nil {
+			if err := rows.Scan(&item.binding.Name, &item.binding.RemoteURL, &username, &item.blob, &item.localRemoteURL); err != nil {
 				_ = rows.Close()
 				return fmt.Errorf("scan legacy peer credential: %w", err)
 			}
@@ -114,6 +117,9 @@ func (s *EmbeddedDoltStore) migrateLegacyPeerCredentials(ctx context.Context) er
 				continue
 			}
 			if duplicateBlobs[string(item.blob)] {
+				continue
+			}
+			if !peercred.RemoteURLMatches(item.localRemoteURL, item.binding.RemoteURL) {
 				continue
 			}
 			password, err := peercred.OpenLegacy(s.credentialKey, item.blob)
@@ -150,7 +156,7 @@ func embeddedLegacyCredentialError(binding peercred.Binding, cause error) error 
 	peerArg, peerNote := remedy.CommandArg(runtime.GOOS, binding.Name, "<peer>")
 	urlArg, urlNote := remedy.CommandArg(runtime.GOOS, binding.RemoteURL, "<url>")
 	userArg, userNote := remedy.CommandArg(runtime.GOOS, binding.Username, "<user>")
-	return fmt.Errorf("stored password for peer %s at %s (user %s) uses the legacy unbound format; re-run `bd federation add-peer %s %s --user %s`%s to store the password again: %w",
+	return fmt.Errorf("stored password for peer %s at %s (user %s) uses the legacy unbound format (unmigrated on this branch or received from a peer); re-run `bd federation add-peer %s %s --user %s`%s to store the password again: %w",
 		remedy.PrintedValue(binding.Name), remedy.PrintedValue(binding.RemoteURL), remedy.PrintedValue(binding.Username),
 		peerArg, urlArg, userArg, peerNote+urlNote+userNote, cause)
 }
@@ -543,11 +549,6 @@ func (s *EmbeddedDoltStore) filteredPushToPeer(ctx context.Context, peer string,
 			}
 			if err := versioncontrolops.Push(ctx, db, peer, stagingBranch+":"+s.branch, user); err != nil {
 				return err
-			}
-			if removed > 0 {
-				if err := versioncontrolops.KeepFilteredPushLocal(ctx, filterConn, s.branch, stagingBranch); err != nil {
-					return err
-				}
 			}
 			versioncontrolops.WarnExcludedHistory(removed)
 			return nil

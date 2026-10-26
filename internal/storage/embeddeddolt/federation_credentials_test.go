@@ -164,6 +164,18 @@ func TestFederationLegacyCredentialsSkipsDuplicatedLegacyBlobs(t *testing.T) {
 	if err := updatePeerCredentialForTest(ctx, store, "unique-c", unique); err != nil {
 		t.Fatalf("write unique-c legacy ciphertext: %v", err)
 	}
+	// Planted row with a unique legacy blob moved into a peer row whose URL
+	// does not match dolt_remotes (or has no dolt_remotes entry).
+	planted := legacyCredentialForTest(t, store.credentialKey, "planted-password")
+	if err := store.withConn(ctx, true, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO federation_peers (name, remote_url, username, password_encrypted)
+			VALUES ('planted', 'file:///tmp/attacker', 'attacker', ?)
+		`, planted)
+		return err
+	}); err != nil {
+		t.Fatalf("insert planted legacy row: %v", err)
+	}
 	marker := filepath.Join(store.beadsDir, peercred.MigrationMarkerFile)
 	if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
 		t.Fatalf("remove migration marker: %v", err)
@@ -188,7 +200,7 @@ func TestFederationLegacyCredentialsSkipsDuplicatedLegacyBlobs(t *testing.T) {
 	if got.Password != "unique-password" {
 		t.Fatalf("unique-c password = %q, want unique-password", got.Password)
 	}
-	for _, name := range []string{"duplicate-a", "duplicate-b"} {
+	for _, name := range []string{"duplicate-a", "duplicate-b", "planted"} {
 		if _, err := reopened.GetFederationPeer(ctx, name); !errors.Is(err, peercred.ErrLegacyCredential) {
 			t.Fatalf("GetFederationPeer(%s) error = %v, want ErrLegacyCredential", name, err)
 		}

@@ -502,11 +502,6 @@ func (s *DoltStore) filteredPushToPeer(ctx context.Context, peer string, exclude
 	if err := s.pushRefToPeer(ctx, peer, refspec); err != nil {
 		return err
 	}
-	if removed > 0 {
-		if err := versioncontrolops.KeepFilteredPushLocal(ctx, conn, sourceBranch, stagingBranch); err != nil {
-			return err
-		}
-	}
 	versioncontrolops.WarnExcludedHistory(removed)
 	return nil
 }

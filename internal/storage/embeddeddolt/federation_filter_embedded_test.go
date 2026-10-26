@@ -17,76 +17,6 @@ import (
 
 func TestFilteredFederationSyncExcludesWispsAndWarnsOnce(t *testing.T) {
 	ctx := t.Context()
-	te, peer, excludedID, keptID := setupFilteredFederationSync(t)
-
-	previousWriter := versioncontrolops.FederationWarnWriter
-	var warnings bytes.Buffer
-	versioncontrolops.FederationWarnWriter = &warnings
-	t.Cleanup(func() { versioncontrolops.FederationWarnWriter = previousWriter })
-
-	result, err := te.store.Sync(ctx, peer.Name, "")
-	if err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	if !result.Pushed || result.PushError != nil {
-		t.Fatalf("Sync push result: pushed=%t push error=%v", result.Pushed, result.PushError)
-	}
-
-	var excludedCount, keptCount int
-	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
-		[]any{excludedID}, &excludedCount)
-	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
-		[]any{keptID}, &keptCount)
-	if excludedCount != 0 || keptCount != 1 {
-		t.Fatalf("pushed tip counts: excluded=%d kept=%d, want 0 and 1", excludedCount, keptCount)
-	}
-	wantWarning := "Warning: federation.exclude_types removed 1 issue(s) from this push, but earlier commits in the pushed history still contain them; a peer that reads history can recover them. See https://beads.gascity.com/multi-agent/federation\n"
-	if got := warnings.String(); got != wantWarning {
-		t.Fatalf("warning = %q, want %q", got, wantWarning)
-	}
-}
-
-func TestFilteredFederationSyncKeepsLocalExcludedIssues(t *testing.T) {
-	ctx := t.Context()
-	te, peer, excludedID, keptID := setupFilteredFederationSync(t)
-
-	for syncNumber := 1; syncNumber <= 2; syncNumber++ {
-		result, err := te.store.Sync(ctx, peer.Name, "")
-		if err != nil {
-			t.Fatalf("Sync %d: %v", syncNumber, err)
-		}
-		if !result.Pushed || result.PushError != nil {
-			t.Fatalf("Sync %d push result: pushed=%t push error=%v", syncNumber, result.Pushed, result.PushError)
-		}
-
-		var localExcludedCount, localKeptCount, localLabelCount int
-		te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues WHERE id = ?", []any{excludedID}, &localExcludedCount)
-		te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues WHERE id = ?", []any{keptID}, &localKeptCount)
-		te.queryScalar(t, ctx, "SELECT COUNT(*) FROM labels WHERE issue_id = ? AND label = ?",
-			[]any{excludedID, "private"}, &localLabelCount)
-		if localExcludedCount != 1 || localKeptCount != 1 {
-			t.Fatalf("after Sync %d local counts: excluded=%d kept=%d, want 1 and 1",
-				syncNumber, localExcludedCount, localKeptCount)
-		}
-		if localLabelCount != 1 {
-			t.Fatalf("after Sync %d excluded label count = %d, want 1", syncNumber, localLabelCount)
-		}
-
-		var peerExcludedCount, peerKeptCount int
-		te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
-			[]any{excludedID}, &peerExcludedCount)
-		te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
-			[]any{keptID}, &peerKeptCount)
-		if peerExcludedCount != 0 || peerKeptCount != 1 {
-			t.Fatalf("after Sync %d pushed tip counts: excluded=%d kept=%d, want 0 and 1",
-				syncNumber, peerExcludedCount, peerKeptCount)
-		}
-	}
-}
-
-func setupFilteredFederationSync(t *testing.T) (*testEnv, *storage.FederationPeer, string, string) {
-	t.Helper()
-	ctx := t.Context()
 	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
 	config.ResetForTesting()
 	if err := config.Initialize(); err != nil {
@@ -162,9 +92,6 @@ func setupFilteredFederationSync(t *testing.T) (*testEnv, *storage.FederationPee
 		VALUES (?, 'excluded', '', '', '', '', 'open', 2, 'task', 1)`, excludedID); err != nil {
 		t.Fatalf("seed legacy durable-plane wisp: %v", err)
 	}
-	if _, err := conn.ExecContext(ctx, "INSERT INTO labels (issue_id, label) VALUES (?, ?)", excludedID, "private"); err != nil {
-		t.Fatalf("label excluded issue: %v", err)
-	}
 	if _, err := conn.ExecContext(ctx, "DELETE FROM dolt_ignore WHERE pattern IN ('wisps', 'wisp_%')"); err != nil {
 		t.Fatalf("make wisp fixture tables versionable: %v", err)
 	}
@@ -196,5 +123,29 @@ func setupFilteredFederationSync(t *testing.T) (*testEnv, *storage.FederationPee
 	if got := config.GetFederationConfig().ExcludeTypes; len(got) != 1 || got[0] != "wisp" {
 		t.Fatalf("federation.exclude_types = %v, want [wisp]", got)
 	}
-	return te, peer, excludedID, kept.ID
+	previousWriter := versioncontrolops.FederationWarnWriter
+	var warnings bytes.Buffer
+	versioncontrolops.FederationWarnWriter = &warnings
+	t.Cleanup(func() { versioncontrolops.FederationWarnWriter = previousWriter })
+
+	result, err := te.store.Sync(ctx, peer.Name, "")
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if !result.Pushed || result.PushError != nil {
+		t.Fatalf("Sync push result: pushed=%t push error=%v", result.Pushed, result.PushError)
+	}
+
+	var excludedCount, keptCount int
+	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
+		[]any{excludedID}, &excludedCount)
+	te.queryScalar(t, ctx, "SELECT COUNT(*) FROM issues AS OF 'remotes/filter-peer/main' WHERE id = ?",
+		[]any{kept.ID}, &keptCount)
+	if excludedCount != 0 || keptCount != 1 {
+		t.Fatalf("pushed tip counts: excluded=%d kept=%d, want 0 and 1", excludedCount, keptCount)
+	}
+	wantWarning := "Warning: federation.exclude_types removed 1 issue(s) from this push, but earlier commits in the pushed history still contain them; a peer that reads history can recover them. See https://beads.gascity.com/multi-agent/federation\n"
+	if got := warnings.String(); got != wantWarning {
+		t.Fatalf("warning = %q, want %q", got, wantWarning)
+	}
 }

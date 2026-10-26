@@ -150,8 +150,10 @@ func (s *DoltStore) migrateCredentialKeys(ctx context.Context, newKey []byte) er
 	oldKey := s.legacyEncryptionKey()
 
 	rows, err := s.queryContext(ctx, `
-		SELECT name, remote_url, username, password_encrypted FROM federation_peers
-		WHERE password_encrypted IS NOT NULL AND LENGTH(password_encrypted) > 0
+		SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')
+		FROM federation_peers fp
+		LEFT JOIN dolt_remotes dr ON dr.name = fp.name
+		WHERE fp.password_encrypted IS NOT NULL AND LENGTH(fp.password_encrypted) > 0
 	`)
 	if err != nil {
 		// Table may not exist yet (fresh install) — not an error
@@ -159,30 +161,52 @@ func (s *DoltStore) migrateCredentialKeys(ctx context.Context, newKey []byte) er
 	}
 	defer rows.Close()
 
+	type migrationRow struct {
+		binding        peercred.Binding
+		localRemoteURL string
+		blob           []byte
+	}
+
+	var scanned []migrationRow
+	for rows.Next() {
+		var row migrationRow
+		var username sql.NullString
+		if err := rows.Scan(&row.binding.Name, &row.binding.RemoteURL, &username, &row.blob, &row.localRemoteURL); err != nil {
+			return fmt.Errorf("failed to scan peer for migration: %w", err)
+		}
+		row.binding.Username = username.String
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to iterate peers for migration: %w", err)
+	}
+
+	legacyBlobs := make([][]byte, 0, len(scanned))
+	for _, row := range scanned {
+		if !peercred.IsV2(row.blob) {
+			legacyBlobs = append(legacyBlobs, row.blob)
+		}
+	}
+	duplicateBlobs := peercred.DuplicateBlobs(legacyBlobs)
+
 	type migrationEntry struct {
 		binding   peercred.Binding
 		plaintext string
 	}
-
 	var toMigrate []migrationEntry
-	for rows.Next() {
-		var binding peercred.Binding
-		var username sql.NullString
-		var encrypted []byte
-		if err := rows.Scan(&binding.Name, &binding.RemoteURL, &username, &encrypted); err != nil {
-			return fmt.Errorf("failed to scan peer for migration: %w", err)
+	for _, row := range scanned {
+		if peercred.IsV2(row.blob) || duplicateBlobs[string(row.blob)] {
+			continue
 		}
-		binding.Username = username.String
-
-		plaintext, err := peercred.OpenLegacy(oldKey, encrypted)
+		if !peercred.RemoteURLMatches(row.localRemoteURL, row.binding.RemoteURL) {
+			continue
+		}
+		plaintext, err := peercred.OpenLegacy(oldKey, row.blob)
 		if err != nil {
 			// Can't decrypt with old key — skip (may already use a different scheme)
 			continue
 		}
-		toMigrate = append(toMigrate, migrationEntry{binding: binding, plaintext: plaintext})
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("failed to iterate peers for migration: %w", err)
+		toMigrate = append(toMigrate, migrationEntry{binding: row.binding, plaintext: plaintext})
 	}
 
 	// Re-encrypt each password with the new key
@@ -222,21 +246,24 @@ func (s *DoltStore) migrateLegacyPeerCredentials(ctx context.Context) error {
 		return err
 	}
 	rows, err := s.queryContext(ctx, `
-		SELECT name, remote_url, username, password_encrypted FROM federation_peers
-		WHERE password_encrypted IS NOT NULL AND LENGTH(password_encrypted) > 0
+		SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')
+		FROM federation_peers fp
+		LEFT JOIN dolt_remotes dr ON dr.name = fp.name
+		WHERE fp.password_encrypted IS NOT NULL AND LENGTH(fp.password_encrypted) > 0
 	`)
 	if err != nil {
 		return fmt.Errorf("select legacy peer credentials: %w", err)
 	}
 	type entry struct {
-		binding peercred.Binding
-		blob    []byte
+		binding        peercred.Binding
+		localRemoteURL string
+		blob           []byte
 	}
 	var entries []entry
 	for rows.Next() {
 		var item entry
 		var username sql.NullString
-		if err := rows.Scan(&item.binding.Name, &item.binding.RemoteURL, &username, &item.blob); err != nil {
+		if err := rows.Scan(&item.binding.Name, &item.binding.RemoteURL, &username, &item.blob, &item.localRemoteURL); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan legacy peer credential: %w", err)
 		}
@@ -264,6 +291,9 @@ func (s *DoltStore) migrateLegacyPeerCredentials(ctx context.Context) error {
 		if duplicateBlobs[string(item.blob)] {
 			continue
 		}
+		if !peercred.RemoteURLMatches(item.localRemoteURL, item.binding.RemoteURL) {
+			continue
+		}
 		password, err := peercred.OpenLegacy(s.credentialKey, item.blob)
 		if err != nil {
 			continue
@@ -283,7 +313,7 @@ func legacyCredentialError(binding peercred.Binding, cause error) error {
 	peerArg, peerNote := remedy.CommandArg(runtime.GOOS, binding.Name, "<peer>")
 	urlArg, urlNote := remedy.CommandArg(runtime.GOOS, binding.RemoteURL, "<url>")
 	userArg, userNote := remedy.CommandArg(runtime.GOOS, binding.Username, "<user>")
-	return fmt.Errorf("stored password for peer %s at %s (user %s) uses the legacy unbound format; re-run `bd federation add-peer %s %s --user %s`%s to store the password again: %w",
+	return fmt.Errorf("stored password for peer %s at %s (user %s) uses the legacy unbound format (unmigrated on this branch or received from a peer); re-run `bd federation add-peer %s %s --user %s`%s to store the password again: %w",
 		remedy.PrintedValue(binding.Name), remedy.PrintedValue(binding.RemoteURL), remedy.PrintedValue(binding.Username),
 		peerArg, urlArg, userArg, peerNote+urlNote+userNote, cause)
 }
