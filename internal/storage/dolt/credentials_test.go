@@ -1620,3 +1620,65 @@ func TestServerLegacyCredentialMigrationSkipsDuplicatedLegacyBlobs(t *testing.T)
 		t.Fatalf("sqlmock expectations: %v", err)
 	}
 }
+
+// TestMigrateCredentialKeysSkipsUntrustedLegacyBlobs pins the key-rotation
+// path to the same guards as open-time migration: a duplicated legacy blob,
+// a peer whose row names no local Dolt remote, and a peer whose local remote
+// URL diverges from the row are all skipped; only the legitimate row is
+// re-sealed under the new key.
+func TestMigrateCredentialKeysSkipsUntrustedLegacyBlobs(t *testing.T) {
+	dbPath := t.TempDir()
+	probe := &DoltStore{dbPath: dbPath}
+	oldKey := probe.legacyEncryptionKey()
+	newKey := make([]byte, 32)
+	for i := range newKey {
+		newKey[i] = byte(i)
+	}
+	shared, err := encryptWithKey("shared-password", oldKey)
+	if err != nil {
+		t.Fatalf("encrypt shared password: %v", err)
+	}
+	unique, err := encryptWithKey("unique-password", oldKey)
+	if err != nil {
+		t.Fatalf("encrypt unique password: %v", err)
+	}
+	moved, err := encryptWithKey("moved-password", oldKey)
+	if err != nil {
+		t.Fatalf("encrypt moved password: %v", err)
+	}
+	diverged, err := encryptWithKey("diverged-password", oldKey)
+	if err != nil {
+		t.Fatalf("encrypt diverged password: %v", err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := &DoltStore{db: db, dbPath: dbPath, beadsDir: t.TempDir()}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT fp.name, fp.remote_url, fp.username, fp.password_encrypted, COALESCE(dr.url, '')")).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "remote_url", "username", "password_encrypted", "local_remote_url"}).
+			AddRow("duplicate-a", "https://duplicate-a.example/beads", "user-a", shared, "https://duplicate-a.example/beads").
+			AddRow("duplicate-b", "https://duplicate-b.example/beads", "user-b", shared, "https://duplicate-b.example/beads").
+			AddRow("moved-no-remote", "https://attacker.example/beads", "user-m", moved, "").
+			AddRow("moved-diverged", "https://attacker.example/beads", "user-d", diverged, "https://good.example/beads").
+			AddRow("unique-c", "https://unique-c.example/beads", "user-c", unique, "https://unique-c.example/beads"))
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE federation_peers SET password_encrypted = ? WHERE name = ?")).
+		WithArgs(sealedPeerPasswordArg{
+			key: newKey,
+			binding: peercred.Binding{
+				Name: "unique-c", RemoteURL: "https://unique-c.example/beads", Username: "user-c",
+			},
+			password: "unique-password",
+		}, "unique-c").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	if err := store.migrateCredentialKeys(t.Context(), newKey); err != nil {
+		t.Fatalf("migrateCredentialKeys: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sqlmock expectations: %v", err)
+	}
+}
