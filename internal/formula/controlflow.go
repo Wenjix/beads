@@ -21,10 +21,12 @@ import (
 // Conditional loops expand once and add a "loop:until" label for runtime evaluation.
 // Returns a new steps slice with loops expanded.
 func ApplyLoops(steps []*Step) ([]*Step, error) {
-	return applyLoops(steps, NewExpansionBudget(""))
+	return applyLoops(steps, NewExpansionBudget(""), false)
 }
 
-func applyLoops(steps []*Step, budget *ExpansionBudget) ([]*Step, error) {
+// applyLoops expands the loops in steps. charged reports whether steps are
+// clones an outer loop already spent budget on.
+func applyLoops(steps []*Step, budget *ExpansionBudget, charged bool) ([]*Step, error) {
 	result := make([]*Step, 0, len(steps))
 
 	for _, step := range steps {
@@ -32,7 +34,7 @@ func applyLoops(steps []*Step, budget *ExpansionBudget) ([]*Step, error) {
 			// No loop - recursively process children
 			clone := cloneStep(step)
 			if len(step.Children) > 0 {
-				children, err := applyLoops(step.Children, budget)
+				children, err := applyLoops(step.Children, budget, charged)
 				if err != nil {
 					return nil, err
 				}
@@ -45,6 +47,11 @@ func applyLoops(steps []*Step, budget *ExpansionBudget) ([]*Step, error) {
 		// Validate loop spec
 		if err := validateLoopSpec(step.Loop, step.ID); err != nil {
 			return nil, err
+		}
+
+		// The expansion replaces this charged clone, so stop counting it.
+		if charged {
+			budget.used -= countSteps([]*Step{step})
 		}
 
 		// Expand the loop
@@ -133,7 +140,7 @@ func expandLoopWithVars(step *Step, vars map[string]string, budget *ExpansionBud
 
 		// Recursively expand any nested loops FIRST
 		var err error
-		result, err = applyLoops(result, budget)
+		result, err = applyLoops(result, budget, true)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +184,7 @@ func expandLoopWithVars(step *Step, vars map[string]string, budget *ExpansionBud
 		}
 
 		// Recursively expand any nested loops FIRST
-		result, err = applyLoops(result, budget)
+		result, err = applyLoops(result, budget, true)
 		if err != nil {
 			return nil, err
 		}
@@ -210,7 +217,7 @@ func expandLoopWithVars(step *Step, vars map[string]string, budget *ExpansionBud
 		}
 
 		// Recursively expand any nested loops
-		result, err = applyLoops(iterSteps, budget)
+		result, err = applyLoops(iterSteps, budget, true)
 		if err != nil {
 			return nil, err
 		}
@@ -585,7 +592,7 @@ func ApplyControlFlowWithBudget(steps []*Step, compose *ComposeRules, budget *Ex
 	var err error
 
 	// Apply loops first (expands steps) - applyLoops already returns new slice
-	steps, err = applyLoops(steps, budget)
+	steps, err = applyLoops(steps, budget, false)
 	if err != nil {
 		return nil, fmt.Errorf("applying loops: %w", err)
 	}

@@ -1029,6 +1029,28 @@ func TestApplyLoops_NestedLoopBodyChargedBeforeCloning(t *testing.T) {
 	}
 }
 
+func TestApplyLoops_NestedLoopBodyNotChargedTwice(t *testing.T) {
+	body := make([]*Step, 3000)
+	for i := range body {
+		body[i] = &Step{ID: fmt.Sprintf("work%d", i), Title: "Work"}
+	}
+	steps := []*Step{{
+		ID: "outer",
+		Loop: &LoopSpec{
+			Count: 2,
+			Body:  []*Step{{ID: "inner", Loop: &LoopSpec{Count: 1, Body: body}}},
+		},
+	}}
+
+	got, err := ApplyControlFlowWithBudget(steps, nil, NewExpansionBudget("fits"))
+	if err != nil {
+		t.Fatalf("ApplyControlFlowWithBudget: %v", err)
+	}
+	if len(got) != 6000 {
+		t.Errorf("got %d steps, want 6000", len(got))
+	}
+}
+
 func TestApplyLoops_HugeRangeOverLimit(t *testing.T) {
 	steps := []*Step{{
 		ID: "sweep",
