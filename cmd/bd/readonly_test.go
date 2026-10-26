@@ -186,25 +186,28 @@ func TestDoltPublishingCommandsRefusedInReadonly(t *testing.T) {
 			args: []string{"origin"},
 			want: "operation 'dolt remote reset-data' is not allowed in read-only mode",
 		},
-		{
-			name: "federation sync",
-			cmd:  federationSyncCmd,
-			want: "operation 'federation sync' is not allowed in read-only mode",
-		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var err error
-			stderr := captureStderr(t, func() { err = tc.cmd.RunE(tc.cmd, tc.args) })
-			code, ok := exitCodeFromError(err)
-			if !ok || code != 1 {
-				t.Fatalf("RunE error = %v, want exit code 1", err)
-			}
-			if !strings.Contains(stderr, tc.want) {
-				t.Fatalf("stderr = %q, want %q", stderr, tc.want)
-			}
+			assertReadonlyRefusal(t, tc.cmd, tc.args, tc.want)
 		})
+	}
+}
+
+// assertReadonlyRefusal runs cmd with args and requires exit code 1 whose
+// stderr names the read-only refusal. It is shared by the cgo-only
+// federation cases in readonly_federation_test.go.
+func assertReadonlyRefusal(t *testing.T, cmd *cobra.Command, args []string, want string) {
+	t.Helper()
+	var err error
+	stderr := captureStderr(t, func() { err = cmd.RunE(cmd, args) })
+	code, ok := exitCodeFromError(err)
+	if !ok || code != 1 {
+		t.Fatalf("RunE error = %v, want exit code 1", err)
+	}
+	if !strings.Contains(stderr, want) {
+		t.Fatalf("stderr = %q, want %q", stderr, want)
 	}
 }
 
@@ -226,21 +229,25 @@ func TestDoltPublishingCommandsRefusedWhenNoPushSet(t *testing.T) {
 			cmd:  doltRemoteResetDataCmd,
 			args: []string{"origin"},
 		},
-		{
-			name: "federation sync",
-			cmd:  federationSyncCmd,
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var err error
-			stderr := captureStderr(t, func() { err = tc.cmd.RunE(tc.cmd, tc.args) })
-			code, ok := exitCodeFromError(err)
-			if !ok || code != 1 {
-				t.Fatalf("RunE error = %v, want exit code 1", err)
-			}
-			if !strings.Contains(stderr, "no-push: true") {
-				t.Fatalf("stderr = %q, want a refusal naming no-push: true", stderr)
-			}
+			assertNoPushRefusal(t, tc.cmd, tc.args)
 		})
+	}
+}
+
+// assertNoPushRefusal runs cmd with args and requires exit code 1 whose
+// stderr names the no-push refusal. It is shared by the cgo-only federation
+// cases in readonly_federation_test.go.
+func assertNoPushRefusal(t *testing.T, cmd *cobra.Command, args []string) {
+	t.Helper()
+	var err error
+	stderr := captureStderr(t, func() { err = cmd.RunE(cmd, args) })
+	code, ok := exitCodeFromError(err)
+	if !ok || code != 1 {
+		t.Fatalf("RunE error = %v, want exit code 1", err)
+	}
+	if !strings.Contains(stderr, "no-push: true") {
+		t.Fatalf("stderr = %q, want a refusal naming no-push: true", stderr)
 	}
 }
